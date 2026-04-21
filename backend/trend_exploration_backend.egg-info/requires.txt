@@ -1,0 +1,11 @@
+apscheduler
+fastapi
+httpx
+langchain-openai
+langgraph
+pydantic-settings
+uvicorn
+
+[dev]
+pytest
+pytest-asyncio
