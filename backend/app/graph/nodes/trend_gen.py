@@ -92,7 +92,8 @@ def _invoke_lens(
     active_region: str,
     intent: dict,
     data_slice: dict[str, list[dict[str, Any]]],
-) -> LensCandidateBatch:
+) -> tuple[LensCandidateBatch, graph_llm.LlmTrace]:
+    system_prompt = "Return structured trend candidates as JSON only."
     prompt = f"""
 You are generating beauty-trend candidates for the {active_region} market.
 Analytical lens: {lens.name}
@@ -114,9 +115,9 @@ Intent:
 Data:
 {json.dumps(data_slice, default=str)}
 """.strip()
-    return graph_llm.invoke_json_response(
+    return graph_llm.invoke_json_response_with_trace(
         LensCandidateBatch,
-        system_prompt="Return structured trend candidates as JSON only.",
+        system_prompt=system_prompt,
         user_prompt=prompt,
     )
 
@@ -188,8 +189,9 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
         input_rows = sum(len(rows) for rows in data_slice.values())
         started_at = now_iso()
         try:
-            lens_batch = _invoke_lens(lens=lens, active_region=active_region, intent=intent, data_slice=data_slice)
+            lens_batch, trace = _invoke_lens(lens=lens, active_region=active_region, intent=intent, data_slice=data_slice)
         except Exception as exc:
+            trace = getattr(exc, "trace", None)
             tool_invocations.append(
                 make_tool_invocation(
                     node=f"trend_gen_agent:{active_region}",
@@ -202,6 +204,15 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
                     input_summary=f"lens={lens.name} market={active_region} input_rows={input_rows}",
                     error=str(exc),
                     metadata={"lens": lens.name, "market": active_region},
+                    system_prompt=(trace or {}).get("system_prompt"),
+                    user_prompt=(trace or {}).get("user_prompt"),
+                    response_text=(trace or {}).get("response_text"),
+                    messages=[
+                        {"role": "system", "content": (trace or {}).get("system_prompt", "")},
+                        {"role": "user", "content": (trace or {}).get("user_prompt", "")},
+                    ]
+                    if trace
+                    else None,
                 )
             )
             raise RuntimeError(
@@ -223,7 +234,17 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
                     "market": active_region,
                     "candidate_count": len(lens_batch.candidates),
                     "schema": "LensCandidateBatch",
+                    "model": trace["model"],
+                    "duration_ms": trace["duration_ms"],
                 },
+                system_prompt=trace["system_prompt"],
+                user_prompt=trace["user_prompt"],
+                response_text=trace["response_text"],
+                messages=[
+                    {"role": "system", "content": trace["system_prompt"]},
+                    {"role": "user", "content": trace["user_prompt"]},
+                    {"role": "assistant", "content": trace["response_text"] or ""},
+                ],
             )
         )
         for llm_candidate in lens_batch.candidates:

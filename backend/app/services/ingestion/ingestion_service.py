@@ -7,8 +7,11 @@ from uuid import uuid4
 import httpx
 
 from app.core.config import get_settings
+from app.core.limits import MAX_SOCIAL_POSTS_PER_KEYWORD
 from app.db.repository import (
     create_ingestion_run,
+    fetch_posts_for_scoring,
+    upsert_post_trend_signals,
     update_ingestion_run,
     upsert_search_trend,
 )
@@ -49,6 +52,12 @@ class IngestionService:
         guardrail_flags: list[str] = []
         stats = Counter()
         target_keywords = list(request.target_keywords)
+        photo_page_size = (
+            request.tiktok_photo_count_per_keyword
+            if request.tiktok_photo_count_per_keyword is not None
+            else MAX_SOCIAL_POSTS_PER_KEYWORD
+        )
+        photo_page_size = min(max(photo_page_size, 1), MAX_SOCIAL_POSTS_PER_KEYWORD)
         if request.recent_days is not None:
             guardrail_flags.extend(
                 item["detail"]
@@ -57,27 +66,31 @@ class IngestionService:
             )
         try:
             if "google_trends" in request.sources:
-                for row in self.serpapi_client.fetch_trends(
-                    market=request.market,
-                    category=request.category,
-                    recent_days=request.recent_days or 7,
-                    seed_terms=target_keywords,
-                ):
-                    enrichment = self.enrichment_service.enrich_keyword(
-                        row["keyword"],
-                        category_hint=request.category,
-                    )
-                    row.update(
-                        {
-                            "llm_category": enrichment.llm_category,
-                            "llm_subcategory": enrichment.llm_subcategory,
-                            "relevance_score": enrichment.relevance_score,
-                            "processed_at": enrichment.processed_at,
-                            "source_batch_id": batch_id,
-                        }
-                    )
-                    upsert_search_trend(row)
-                    stats["search_rows"] += 1
+                try:
+                    for row in self.serpapi_client.fetch_trends(
+                        market=request.market,
+                        category=request.category,
+                        recent_days=request.recent_days or 7,
+                        seed_terms=target_keywords,
+                    ):
+                        enrichment = self.enrichment_service.enrich_keyword(
+                            row["keyword"],
+                            category_hint=request.category,
+                        )
+                        row.update(
+                            {
+                                "llm_category": enrichment.llm_category,
+                                "llm_subcategory": enrichment.llm_subcategory,
+                                "relevance_score": enrichment.relevance_score,
+                                "processed_at": enrichment.processed_at,
+                                "source_batch_id": batch_id,
+                            }
+                        )
+                        upsert_search_trend(row)
+                        stats["search_rows"] += 1
+                except (httpx.HTTPError, RuntimeError) as exc:
+                    logger.warning("Google Trends fetch failed: %s", exc)
+                    guardrail_flags.append(f"Google Trends fetch failed: {exc}")
 
             if "sales" in request.sources:
                 sales_stats = self.sales_seed_service.refresh()
@@ -87,8 +100,6 @@ class IngestionService:
                 if not self.settings.tikhub_api_key:
                     guardrail_flags.append("TikTok photo search skipped: TIKHUB_API_KEY is not set.")
                 else:
-                    photo_page_size = request.tiktok_photo_count_per_keyword if request.tiktok_photo_count_per_keyword is not None else 10
-                    photo_page_size = min(max(photo_page_size, 1), 50)
                     for term in target_keywords:
                         try:
                             _, _, saved = run_tiktok_photo_fetch_clean_save(
@@ -125,6 +136,43 @@ class IngestionService:
                             logger.warning("Instagram hashtag fetch failed for term %r: %s", term, exc)
                             guardrail_flags.append(f"Instagram hashtag fetch failed for '{term}': {exc}")
 
+            if "tiktok" in request.sources or "instagram" in request.sources:
+                pending_posts = fetch_posts_for_scoring(batch_id)
+                scored_rows: list[dict[str, object]] = []
+                for post in pending_posts:
+                    input_text = str(post.get("text") or "").strip()
+                    if not input_text:
+                        input_text = str(post.get("search_keyword") or post.get("source_row_id") or "").strip()
+                    try:
+                        result = self.enrichment_service.score_post(
+                            text=input_text,
+                            market_hint=request.market,
+                            category_hint=request.category,
+                        )
+                        scored_rows.append(
+                            {
+                                "source_table": post["source_table"],
+                                "source_row_id": post["source_row_id"],
+                                "source_batch_id": batch_id,
+                                "search_keyword": post.get("search_keyword"),
+                                "input_text": input_text[:5000],
+                                **result.as_row(),
+                            }
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Post signal scoring failed for %s:%s: %s",
+                            post.get("source_table"),
+                            post.get("source_row_id"),
+                            exc,
+                        )
+                        guardrail_flags.append(
+                            "Post signal scoring failed for "
+                            f"{post.get('source_table')}:{post.get('source_row_id')}: {exc}"
+                        )
+                upsert_post_trend_signals(scored_rows)
+                stats["post_signal_rows"] += len(scored_rows)
+
             if (
                 stats["search_rows"] == 0
                 and stats["tiktok_rows"] == 0
@@ -140,8 +188,9 @@ class IngestionService:
             stats["sources_ignoring_recency"] = [item["source"] for item in recency_support if item["status"] == "unsupported"]
             stats["limits"] = {
                 "max_target_keywords": request.max_target_keywords,
-                "tiktok_photo_count_per_keyword": request.tiktok_photo_count_per_keyword,
+                "tiktok_photo_count_per_keyword": photo_page_size if "tiktok" in request.sources else request.tiktok_photo_count_per_keyword,
                 "instagram_feed_type": request.instagram_feed_type,
+                "social_posts_per_keyword_cap": MAX_SOCIAL_POSTS_PER_KEYWORD,
             }
             update_ingestion_run(
                 run_id,

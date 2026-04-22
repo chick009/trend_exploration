@@ -1,5 +1,13 @@
-import { GraphFlowStepsSidebar, GraphWorkflowPanel } from "../../components/GraphWorkflowPanel";
-import { ToolInvocationTimeline } from "../../components/ToolInvocationTimeline";
+import { useEffect, useMemo, useState } from "react";
+
+import { AgentNodeDrawer } from "../../components/AgentNodeDrawer";
+import {
+  buildGraphSteps,
+  GraphFlowStepsSidebar,
+  RunControlBar,
+  StreamingTraceCard,
+  withFailedRunStepError,
+} from "../../components/GraphWorkflowPanel";
 import { TrendCard } from "../../components/TrendCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, StatusPill } from "../../components/ui";
 import type { TrendWorkbench } from "../../hooks/useTrendWorkbench";
@@ -34,9 +42,34 @@ function CurrentAgentStatusLine({ workbench }: { workbench: TrendWorkbench }) {
 
 export function LangGraphAgentTab({ workbench }: Props) {
   const { filters, actions, runState } = workbench;
-
   const report = runState.agentReport;
-  const toolInvocations = runState.analysisRun?.tool_invocations ?? [];
+  const [selectedNodeId, setSelectedNodeId] = useState<string>();
+
+  const graphSteps = useMemo(() => {
+    const baseSteps = buildGraphSteps(
+      runState.analysisRun?.execution_trace ?? [],
+      runState.analysisRun?.status,
+      filters.analysisMode,
+      filters.market,
+    );
+    return withFailedRunStepError(baseSteps, runState.analysisRun?.status);
+  }, [filters.analysisMode, filters.market, runState.analysisRun?.execution_trace, runState.analysisRun?.status]);
+
+  useEffect(() => {
+    if (graphSteps.length === 0) {
+      return;
+    }
+    if (selectedNodeId && graphSteps.some((step) => step.nodeId === selectedNodeId)) {
+      return;
+    }
+    const preferredStep =
+      graphSteps.find((step) => step.status === "active") ??
+      graphSteps.find((step) => step.status === "complete" || step.status === "error" || step.status === "skipped") ??
+      graphSteps[0];
+    setSelectedNodeId(preferredStep.nodeId);
+  }, [graphSteps, selectedNodeId]);
+
+  const selectedStep = graphSteps.find((step) => step.nodeId === selectedNodeId);
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">
@@ -45,22 +78,9 @@ export function LangGraphAgentTab({ workbench }: Props) {
           market={filters.market}
           analysisMode={filters.analysisMode}
           analysisRun={runState.analysisRun}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={setSelectedNodeId}
         />
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Analysis input</CardTitle>
-            <CardDescription>Scope comes from the workbench filters; optional query is below in the stream panel.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-slate-300">
-            <div className="rounded-2xl border border-white/10 bg-white/3 px-3 py-2">Market: {filters.market}</div>
-            <div className="rounded-2xl border border-white/10 bg-white/3 px-3 py-2">Category: {filters.category}</div>
-            <div className="rounded-2xl border border-white/10 bg-white/3 px-3 py-2">Recency: {filters.recentDays} days</div>
-            <div className="rounded-2xl border border-white/10 bg-white/3 px-3 py-2">
-              Mode: {filters.analysisMode === "single_market" ? "Single market" : "Cross market"}
-            </div>
-          </CardContent>
-        </Card>
 
         <Card>
           <CardHeader>
@@ -81,19 +101,29 @@ export function LangGraphAgentTab({ workbench }: Props) {
 
       <div className="grid min-w-0 gap-6">
         <section className="space-y-4">
-          <div className="eyebrow">Stream and tools</div>
-          <GraphWorkflowPanel
-            market={filters.market}
-            analysisMode={filters.analysisMode}
+          <div className="eyebrow">Run and inspect</div>
+          <RunControlBar
             analysisRun={runState.analysisRun}
+            market={filters.market}
+            category={filters.category}
+            recentDays={filters.recentDays}
+            analysisMode={filters.analysisMode}
+            onMarketChange={actions.setMarket}
+            onCategoryChange={actions.setCategory}
+            onRecentDaysChange={actions.setRecentDays}
+            onAnalysisModeChange={actions.setAnalysisMode}
             workflowPrompt={filters.workflowPrompt}
             onWorkflowPromptChange={actions.setWorkflowPrompt}
             onRunAnalysis={actions.runAnalysis}
             isBusy={runState.isBusy}
             runErrorMessage={runState.runErrorMessage}
           />
-
-          <ToolInvocationTimeline invocations={toolInvocations} runStatus={runState.analysisRun?.status} />
+          <AgentNodeDrawer step={selectedStep} analysisRun={runState.analysisRun} />
+          <StreamingTraceCard
+            analysisRun={runState.analysisRun}
+            market={filters.market}
+            analysisMode={filters.analysisMode}
+          />
         </section>
 
         <section className="space-y-3">

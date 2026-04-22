@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.config import get_settings
+from app.core.limits import MAX_SOCIAL_POSTS_PER_KEYWORD
 from app.services.ingestion.tiktok_photo_client import (
     normalize_tikhub_data,
     pagination_hints,
@@ -26,7 +27,12 @@ def _require_tikhub_key() -> None:
 @router.get("/search")
 def search_tiktok_photos(
     keyword: str = Query(..., description="Search keyword"),
-    count: int = Query(20, ge=1, le=50, description="Results per page"),
+    count: int = Query(
+        MAX_SOCIAL_POSTS_PER_KEYWORD,
+        ge=1,
+        le=MAX_SOCIAL_POSTS_PER_KEYWORD,
+        description="Results per keyword persisted to the database",
+    ),
     offset: int = Query(0, ge=0, description="Page offset / cursor seed"),
     search_id: str | None = Query(None, description="Search id from previous response for pagination"),
     cookie: str | None = Query(None, description="Optional TikTok web cookie"),
@@ -61,7 +67,12 @@ def search_tiktok_photos(
 @router.get("/search/raw")
 def search_tiktok_photos_raw(
     keyword: str = Query(..., description="Search keyword"),
-    count: int = Query(20, ge=1, le=50, description="Results per page"),
+    count: int = Query(
+        MAX_SOCIAL_POSTS_PER_KEYWORD,
+        ge=1,
+        le=MAX_SOCIAL_POSTS_PER_KEYWORD,
+        description="Results per keyword persisted to the database",
+    ),
     offset: int = Query(0, ge=0, description="Page offset / cursor seed"),
     search_id: str | None = Query(None, description="Search id from previous response for pagination"),
     cookie: str | None = Query(None, description="Optional TikTok web cookie"),

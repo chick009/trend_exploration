@@ -103,6 +103,11 @@ export type TrendReport = {
 export type ToolInvocationKind = "sql" | "llm" | "memory";
 export type ToolInvocationStatus = "running" | "success" | "error";
 
+export type ToolInvocationMessage = {
+  role: string;
+  content: string;
+};
+
 export type ToolInvocation = {
   id: string;
   node: string;
@@ -118,6 +123,10 @@ export type ToolInvocation = {
   output_summary?: string | null;
   error?: string | null;
   metadata?: Record<string, unknown>;
+  system_prompt?: string | null;
+  user_prompt?: string | null;
+  response_text?: string | null;
+  messages?: ToolInvocationMessage[];
 };
 
 export type RunStatusResponse = {
@@ -129,6 +138,7 @@ export type RunStatusResponse = {
   stats: Record<string, unknown>;
   execution_trace: string[];
   tool_invocations: ToolInvocation[];
+  node_outputs: Record<string, unknown>;
   guardrail_flags: string[];
   target_keywords: string[];
   suggested_keywords: string[];

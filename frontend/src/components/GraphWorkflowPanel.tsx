@@ -1,4 +1,6 @@
-import type { AnalysisMode, Market, RunStatusResponse } from "../api/types";
+import type { AnalysisMode, Category, Market, RunStatusResponse } from "../api/types";
+import { analysisModes, categories, markets } from "../lib/options";
+import { cn } from "../lib/utils";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, StatusPill } from "./ui";
 
 export type GraphFlowStepStatus = "pending" | "active" | "complete" | "skipped" | "error";
@@ -75,7 +77,7 @@ export function buildGraphSteps(
     {
       id: "synth",
       title: "Evidence synthesizer",
-      nodeId: "synthesizer",
+      nodeId: "evidence_synthesizer",
       detail: synthLine ?? "Combines source evidence into candidate scores.",
       status: synthLine ? "complete" : trendLines.length > 0 && running ? "active" : "pending",
     },
@@ -101,17 +103,17 @@ export function withFailedRunStepError(steps: GraphWorkflowStep[], runStatus: st
     return steps;
   }
   let lastDone = -1;
-  for (let i = 0; i < steps.length; i += 1) {
-    if (steps[i].status === "complete" || steps[i].status === "skipped") {
-      lastDone = i;
+  for (let index = 0; index < steps.length; index += 1) {
+    if (steps[index].status === "complete" || steps[index].status === "skipped") {
+      lastDone = index;
     }
   }
-  const errAt = lastDone + 1;
-  return steps.map((step, i) => {
-    if (i === errAt) {
+  const errorAt = lastDone + 1;
+  return steps.map((step, index) => {
+    if (index === errorAt) {
       return { ...step, status: "error" as const };
     }
-    if (i > errAt) {
+    if (index > errorAt) {
       return { ...step, status: "pending" as const };
     }
     return step;
@@ -156,15 +158,15 @@ const FLOW_STATUS_LABEL: Record<GraphFlowStepStatus, string> = {
   active: "active",
 };
 
-export function GraphFlowStepsSidebar({
-  market,
-  analysisMode,
-  analysisRun,
-}: {
+type SidebarProps = {
   market: Market;
   analysisMode: AnalysisMode;
   analysisRun?: RunStatusResponse;
-}) {
+  selectedNodeId?: string;
+  onSelectNode?: (nodeId: string) => void;
+};
+
+export function GraphFlowStepsSidebar({ market, analysisMode, analysisRun, selectedNodeId, onSelectNode }: SidebarProps) {
   const trace = analysisRun?.execution_trace ?? [];
   const runStatus = analysisRun?.status;
   const baseSteps = buildGraphSteps(trace, runStatus, analysisMode, market);
@@ -175,7 +177,7 @@ export function GraphFlowStepsSidebar({
       <CardHeader className="space-y-1">
         <Badge tone="accent">LangGraph</Badge>
         <CardTitle className="text-base">Logic flow</CardTitle>
-        <CardDescription>Planner → preload → agents → synthesis → gate → report.</CardDescription>
+        <CardDescription>Click a node to inspect shared state received, prompt handoff, and shared state emitted.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
         {steps.map((item) => {
@@ -183,10 +185,17 @@ export function GraphFlowStepsSidebar({
           const cls = flowColorClasses[colorKey];
           const blurb =
             item.id === "trend_gen" ? item.detail ?? STATIC_FLOW_DESCRIPTION.trend_gen : STATIC_FLOW_DESCRIPTION[item.id] ?? item.detail;
+          const selected = selectedNodeId === item.nodeId;
           return (
-            <div
+            <button
               key={item.id}
-              className={`rounded-2xl border border-white/10 border-l-4 bg-white/[0.04] p-3 pl-4 ${cls.border}`}
+              type="button"
+              onClick={() => onSelectNode?.(item.nodeId)}
+              className={cn(
+                "w-full rounded-2xl border border-white/10 border-l-4 bg-white/[0.04] p-3 pl-4 text-left transition hover:bg-white/[0.06]",
+                cls.border,
+                selected && "ring-2 ring-blue-400/60",
+              )}
             >
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -200,7 +209,7 @@ export function GraphFlowStepsSidebar({
                 </Badge>
               </div>
               {blurb ? <p className={`mt-2 text-xs leading-relaxed ${cls.label}`}>{blurb}</p> : null}
-            </div>
+            </button>
           );
         })}
       </CardContent>
@@ -208,10 +217,16 @@ export function GraphFlowStepsSidebar({
   );
 }
 
-type StreamPanelProps = {
-  market: Market;
-  analysisMode: AnalysisMode;
+type RunControlBarProps = {
   analysisRun?: RunStatusResponse;
+  market: Market;
+  category: Category;
+  recentDays: number;
+  analysisMode: AnalysisMode;
+  onMarketChange: (value: Market) => void;
+  onCategoryChange: (value: Category) => void;
+  onRecentDaysChange: (value: number) => void;
+  onAnalysisModeChange: (value: AnalysisMode) => void;
   workflowPrompt: string;
   onWorkflowPromptChange: (value: string) => void;
   onRunAnalysis: () => void;
@@ -219,28 +234,33 @@ type StreamPanelProps = {
   runErrorMessage?: string | null;
 };
 
-export function GraphWorkflowPanel({
-  market,
-  analysisMode,
+export function RunControlBar({
   analysisRun,
+  market,
+  category,
+  recentDays,
+  analysisMode,
+  onMarketChange,
+  onCategoryChange,
+  onRecentDaysChange,
+  onAnalysisModeChange,
   workflowPrompt,
   onWorkflowPromptChange,
   onRunAnalysis,
   isBusy,
   runErrorMessage,
-}: StreamPanelProps) {
-  const trace = analysisRun?.execution_trace ?? [];
-
+}: RunControlBarProps) {
   return (
     <Card className="overflow-hidden">
       <CardHeader className="gap-4 border-b border-white/10 pb-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-2">
-            <Badge tone="info">Stream</Badge>
+            <Badge tone="info">Run graph</Badge>
             <div className="space-y-1">
-              <CardTitle>Runtime trace and tool calls</CardTitle>
+              <CardTitle>Scope, prompt, and execution</CardTitle>
               <CardDescription>
-                Line-delimited log stream as the run progresses; tool invocations are summarized in the next card.
+                Configure the run below (same fields as the workbench). Optional query steers the graph; inspect nodes from the logic flow
+                sidebar.
               </CardDescription>
             </div>
           </div>
@@ -254,7 +274,87 @@ export function GraphWorkflowPanel({
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-6">
+      <CardContent className="space-y-5">
+        <div className="space-y-3">
+          <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Analysis scope</div>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <label className="space-y-1.5">
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Market</span>
+              <select
+                value={market}
+                disabled={isBusy}
+                onChange={(event) => onMarketChange(event.target.value as Market)}
+                className="w-full"
+              >
+                {markets.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Category</span>
+              <select
+                value={category}
+                disabled={isBusy}
+                onChange={(event) => onCategoryChange(event.target.value as Category)}
+                className="w-full"
+              >
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Recency</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[7, 14, 30].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => onRecentDaysChange(days)}
+                    className={cn(
+                      "rounded-lg border px-2.5 py-1 text-xs font-medium transition",
+                      recentDays === days
+                        ? "border-transparent bg-gradient-to-r from-blue-600 to-violet-500 text-white"
+                        : "border-white/10 bg-white/3 text-slate-200 hover:bg-slate-800/60 hover:text-slate-100",
+                      isBusy && "cursor-not-allowed opacity-60",
+                    )}
+                  >
+                    {days}d
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Mode</span>
+              <div className="flex flex-col gap-1.5">
+                {analysisModes.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => onAnalysisModeChange(mode)}
+                    className={cn(
+                      "rounded-lg border px-2.5 py-1.5 text-left text-xs font-medium transition",
+                      analysisMode === mode
+                        ? "border-transparent bg-gradient-to-r from-blue-600 to-violet-500 text-white"
+                        : "border-white/10 bg-white/3 text-slate-200 hover:bg-slate-800/60 hover:text-slate-100",
+                      isBusy && "cursor-not-allowed opacity-60",
+                    )}
+                  >
+                    {mode === "single_market" ? "Single market" : "Cross market"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <label className="block space-y-2">
           <span className="text-sm font-medium text-slate-200">Optional query</span>
           <textarea
@@ -272,32 +372,113 @@ export function GraphWorkflowPanel({
             {runErrorMessage}
           </div>
         ) : null}
-
-        <div>
-          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Streaming log</div>
-          <div className="max-h-[min(520px,60vh)] overflow-y-auto rounded-2xl border border-white/10 bg-slate-950/50 p-4">
-            {trace.length > 0 ? (
-              <ol className="list-decimal space-y-2 pl-4 font-mono text-[11px] leading-relaxed text-slate-300 [word-break:break-word]">
-                {trace.map((line, index) => (
-                  <li key={`${index}-${line.slice(0, 64)}`} className="marker:text-slate-600">
-                    {line}
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <div className="px-1 py-10 text-center text-sm text-slate-500">
-                No lines yet. Run the graph to stream execution_trace from the backend.
-              </div>
-            )}
-          </div>
-        </div>
-
-        {analysisRun?.id ? (
-          <div className="rounded-2xl border border-white/10 bg-white/3 px-4 py-3 text-sm text-slate-400">
-            Run <code className="inline-code">{analysisRun.id}</code> · {market} · {analysisMode.replace("_", " ")}
-          </div>
-        ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+export function StreamingTraceCard({
+  analysisRun,
+  market,
+  analysisMode,
+}: {
+  analysisRun?: RunStatusResponse;
+  market: Market;
+  analysisMode: AnalysisMode;
+}) {
+  const trace = analysisRun?.execution_trace ?? [];
+  return (
+    <Card>
+      <CardHeader className="space-y-1">
+        <Badge tone="info">Streaming trace</Badge>
+        <CardTitle>Execution log</CardTitle>
+        <CardDescription>Expanded only when you need the raw line-by-line backend trace.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <details className="group rounded-2xl border border-white/10 bg-slate-950/40">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-200">
+            <span className="group-open:hidden">Show streaming log</span>
+            <span className="hidden group-open:inline">Hide streaming log</span>
+          </summary>
+          <div className="border-t border-white/10 px-4 py-4">
+            <div className="max-h-[min(420px,48vh)] overflow-y-auto rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              {trace.length > 0 ? (
+                <ol className="list-decimal space-y-2 pl-4 font-mono text-[11px] leading-relaxed text-slate-300 [word-break:break-word]">
+                  {trace.map((line, index) => (
+                    <li key={`${index}-${line.slice(0, 64)}`} className="marker:text-slate-600">
+                      {line}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="px-1 py-10 text-center text-sm text-slate-500">
+                  No lines yet. Run the graph to stream `execution_trace` from the backend.
+                </div>
+              )}
+            </div>
+
+            {analysisRun?.id ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/3 px-4 py-3 text-sm text-slate-400">
+                Run <code className="inline-code">{analysisRun.id}</code> · {market} · {analysisMode.replace("_", " ")}
+              </div>
+            ) : null}
+          </div>
+        </details>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function GraphWorkflowPanel({
+  market,
+  category,
+  recentDays,
+  analysisMode,
+  analysisRun,
+  onMarketChange,
+  onCategoryChange,
+  onRecentDaysChange,
+  onAnalysisModeChange,
+  workflowPrompt,
+  onWorkflowPromptChange,
+  onRunAnalysis,
+  isBusy,
+  runErrorMessage,
+}: {
+  market: Market;
+  category: Category;
+  recentDays: number;
+  analysisMode: AnalysisMode;
+  analysisRun?: RunStatusResponse;
+  onMarketChange: (value: Market) => void;
+  onCategoryChange: (value: Category) => void;
+  onRecentDaysChange: (value: number) => void;
+  onAnalysisModeChange: (value: AnalysisMode) => void;
+  workflowPrompt: string;
+  onWorkflowPromptChange: (value: string) => void;
+  onRunAnalysis: () => void;
+  isBusy: boolean;
+  runErrorMessage?: string | null;
+}) {
+  return (
+    <div className="space-y-6">
+      <RunControlBar
+        analysisRun={analysisRun}
+        market={market}
+        category={category}
+        recentDays={recentDays}
+        analysisMode={analysisMode}
+        onMarketChange={onMarketChange}
+        onCategoryChange={onCategoryChange}
+        onRecentDaysChange={onRecentDaysChange}
+        onAnalysisModeChange={onAnalysisModeChange}
+        workflowPrompt={workflowPrompt}
+        onWorkflowPromptChange={onWorkflowPromptChange}
+        onRunAnalysis={onRunAnalysis}
+        isBusy={isBusy}
+        runErrorMessage={runErrorMessage}
+      />
+      <StreamingTraceCard analysisRun={analysisRun} market={market} analysisMode={analysisMode} />
+    </div>
   );
 }

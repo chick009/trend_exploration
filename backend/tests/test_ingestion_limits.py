@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.db.repository import fetch_posts_for_scoring, upsert_instagram_posts, upsert_tiktok_photo_posts
 from app.services.ingestion.rednote_client import RednoteClient
 
 
@@ -210,3 +211,60 @@ def test_rednote_search_falls_back_to_web_on_app_v2_400(test_database, monkeypat
     assert requests[0][0].endswith("/app_v2/search_notes")
     assert requests[1][0].endswith("/web/search_notes")
     assert rows[0]["id"] == "web-1"
+
+
+def test_fetch_posts_for_scoring_caps_rows_per_keyword_and_source(test_database) -> None:
+    batch_id = "batch-cap-test"
+    upsert_instagram_posts(
+        [
+            {
+                "post_id": f"ig-{index}",
+                "search_keyword": "collagen",
+                "code": f"ig-code-{index}",
+                "username": "creator",
+                "full_name": "Creator",
+                "caption": f"Instagram post {index}",
+                "hashtags_json": "[]",
+                "mentions_json": "[]",
+                "likes": 10 + index,
+                "comments": 1,
+                "views": 20,
+                "is_video": 0,
+                "created_at": f"2026-04-0{(index % 7) + 1}T10:00:00",
+                "location_name": None,
+                "city": None,
+                "lat": None,
+                "lng": None,
+                "source_batch_id": batch_id,
+            }
+            for index in range(7)
+        ]
+    )
+    upsert_tiktok_photo_posts(
+        [
+            {
+                "id": f"tt-{index}",
+                "search_keyword": "collagen",
+                "create_time_unix": 1712000000 + index,
+                "create_time": f"2026-04-0{(index % 7) + 1} 10:00:00",
+                "description": f"TikTok post {index}",
+                "author_json": "{}",
+                "image_url": None,
+                "cover_url": None,
+                "stats_json": "{}",
+                "hashtags_json": "[]",
+                "music_json": None,
+                "is_ad": 0,
+                "share_url": None,
+                "source_batch_id": batch_id,
+            }
+            for index in range(7)
+        ]
+    )
+
+    rows = fetch_posts_for_scoring(batch_id)
+
+    instagram_rows = [row for row in rows if row["source_table"] == "instagram_posts"]
+    tiktok_rows = [row for row in rows if row["source_table"] == "tiktok_photo_posts"]
+    assert len(instagram_rows) == 5
+    assert len(tiktok_rows) == 5

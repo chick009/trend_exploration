@@ -46,6 +46,13 @@ def _minimal_item() -> dict[str, Any]:
     }
 
 
+def _minimal_item_with_id(post_id: str) -> dict[str, Any]:
+    item = _minimal_item()
+    item["id"] = post_id
+    item["code"] = f"code-{post_id}"
+    return item
+
+
 def test_normalize_tikhub_data_dict() -> None:
     inner = {"data": {"items": []}}
     assert normalize_tikhub_data({"data": inner}) == inner
@@ -199,6 +206,26 @@ def test_run_instagram_fetch_clean_save_uses_real_pipeline(test_database, monkey
     with connection_scope() as conn:
         count = conn.execute("SELECT COUNT(*) AS c FROM instagram_posts").fetchone()
     assert dict(count)["c"] == 1
+
+
+def test_run_instagram_fetch_clean_save_caps_saved_posts_per_keyword(test_database, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    settings.tikhub_api_key = "fake-token"
+
+    def fake_fetch(self: InstagramClient, **kwargs: Any) -> dict[str, Any]:
+        items = [_minimal_item_with_id(f"ig-{index}") for index in range(7)]
+        return {"data": {"data": {"items": items}}}
+
+    monkeypatch.setattr(InstagramClient, "fetch_hashtag_posts", fake_fetch)
+
+    envelope, posts, saved_count = run_instagram_fetch_clean_save(keyword="cat", client=InstagramClient())
+    assert saved_count == 5
+    assert len(posts) == 5
+    assert "data" in envelope
+
+    with connection_scope() as conn:
+        count = conn.execute("SELECT COUNT(*) AS c FROM instagram_posts").fetchone()
+    assert dict(count)["c"] == 5
 
 
 def test_run_instagram_fetch_clean_save_retries_hashtag_variants(

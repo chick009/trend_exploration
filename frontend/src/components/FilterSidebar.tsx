@@ -205,7 +205,7 @@ export function FilterSidebar({
       {sources.includes("tiktok") ? (
         <section className="space-y-2">
           <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">TikTok photo search</div>
-          <NumberField label="Photos per keyword" value={tiktokPhotosPerKeyword} min={1} max={50} onChange={onTiktokPhotosPerKeywordChange} />
+          <NumberField label="Photos per keyword" value={tiktokPhotosPerKeyword} min={1} max={5} onChange={onTiktokPhotosPerKeywordChange} />
         </section>
       ) : null}
 

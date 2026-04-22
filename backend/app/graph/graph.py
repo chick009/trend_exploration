@@ -42,7 +42,7 @@ def build_graph():
         {
             "proceed": "formatter",
             "low_signal": "formatter",
-            "insufficient_data": END,
+            "insufficient_data": "formatter",
         },
     )
     builder.add_edge("formatter", "memory_write")

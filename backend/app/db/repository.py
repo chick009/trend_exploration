@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+from app.core.limits import MAX_SOCIAL_POSTS_PER_KEYWORD
 from app.db.connection import connection_scope
 from app.models.schemas import AnalysisRunRequest, IngestionRunRequest
 
@@ -123,6 +124,23 @@ TABLE_WHITELIST: dict[str, dict[str, Any]] = {
         ],
         "default_order": "fetched_at",
         "updated_column": "fetched_at",
+    },
+    "post_trend_signals": {
+        "description": "LLM-scored trend signals per Instagram/TikTok post.",
+        "search_columns": ["source_table", "source_row_id", "search_keyword", "region", "category", "source_batch_id"],
+        "order_columns": [
+            "id",
+            "source_table",
+            "region",
+            "category",
+            "trend_strength",
+            "novelty",
+            "consumer_intent",
+            "processed_at",
+            "source_batch_id",
+        ],
+        "default_order": "processed_at",
+        "updated_column": "processed_at",
     },
 }
 
@@ -372,6 +390,7 @@ def update_analysis_run(
     error_message: str | None = None,
     source_batch_ids: list[str] | None = None,
     tool_invocations: list[dict[str, Any]] | None = None,
+    node_outputs: dict[str, Any] | None = None,
 ) -> None:
     completed_at = datetime.utcnow().isoformat() if status in {"completed", "failed"} else None
     with connection_scope() as connection:
@@ -384,6 +403,7 @@ def update_analysis_run(
                 error_message = COALESCE(?, error_message),
                 source_batch_ids = COALESCE(?, source_batch_ids),
                 tool_invocations_json = COALESCE(?, tool_invocations_json),
+                node_outputs_json = COALESCE(?, node_outputs_json),
                 completed_at = COALESCE(?, completed_at)
             WHERE id = ?
             """,
@@ -394,6 +414,7 @@ def update_analysis_run(
                 error_message,
                 json_dumps(source_batch_ids) if source_batch_ids is not None else None,
                 json_dumps(tool_invocations) if tool_invocations is not None else None,
+                json_dumps(node_outputs) if node_outputs is not None else None,
                 completed_at,
                 run_id,
             ),
@@ -649,6 +670,110 @@ def upsert_instagram_posts(rows: list[dict[str, Any]]) -> None:
                     row.get("lat"),
                     row.get("lng"),
                     row.get("source_batch_id"),
+                )
+                for row in rows
+            ],
+        )
+
+
+def fetch_posts_for_scoring(batch_id: str) -> list[dict[str, Any]]:
+    with connection_scope() as connection:
+        rows = safe_sql_execute(
+            connection,
+            """
+            WITH instagram_ranked AS (
+                SELECT
+                    'instagram_posts' AS source_table,
+                    post_id AS source_row_id,
+                    source_batch_id,
+                    search_keyword,
+                    SUBSTR(COALESCE(caption, ''), 1, 5000) AS text,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY search_keyword
+                        ORDER BY COALESCE(created_at, fetched_at) DESC, post_id DESC
+                    ) AS keyword_rank
+                FROM instagram_posts
+                WHERE source_batch_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM post_trend_signals
+                      WHERE post_trend_signals.source_table = 'instagram_posts'
+                        AND post_trend_signals.source_row_id = instagram_posts.post_id
+                  )
+            ),
+            tiktok_ranked AS (
+                SELECT
+                    'tiktok_photo_posts' AS source_table,
+                    id AS source_row_id,
+                    source_batch_id,
+                    search_keyword,
+                    SUBSTR(
+                        TRIM(
+                            COALESCE(description, '')
+                            || CASE
+                                WHEN COALESCE(hashtags_json, '[]') NOT IN ('', '[]')
+                                THEN CHAR(10) || CHAR(10) || 'Hashtags: ' || hashtags_json
+                                ELSE ''
+                            END
+                        ),
+                        1,
+                        5000
+                    ) AS text,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY search_keyword
+                        ORDER BY COALESCE(create_time, fetched_at) DESC, id DESC
+                    ) AS keyword_rank
+                FROM tiktok_photo_posts
+                WHERE source_batch_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM post_trend_signals
+                      WHERE post_trend_signals.source_table = 'tiktok_photo_posts'
+                        AND post_trend_signals.source_row_id = tiktok_photo_posts.id
+                  )
+            )
+            SELECT source_table, source_row_id, source_batch_id, search_keyword, text
+            FROM instagram_ranked
+            WHERE keyword_rank <= ?
+
+            UNION ALL
+
+            SELECT source_table, source_row_id, source_batch_id, search_keyword, text
+            FROM tiktok_ranked
+            WHERE keyword_rank <= ?
+            """,
+            (batch_id, batch_id, MAX_SOCIAL_POSTS_PER_KEYWORD, MAX_SOCIAL_POSTS_PER_KEYWORD),
+        )
+    return rows
+
+
+def upsert_post_trend_signals(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    with connection_scope() as connection:
+        connection.executemany(
+            """
+            INSERT OR REPLACE INTO post_trend_signals (
+                source_table, source_row_id, source_batch_id, search_keyword, input_text,
+                region, category, trend_strength, novelty, consumer_intent,
+                llm_rationale, processing_model, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row["source_table"],
+                    row["source_row_id"],
+                    row.get("source_batch_id"),
+                    row.get("search_keyword"),
+                    row.get("input_text"),
+                    row["region"],
+                    row["category"],
+                    row.get("trend_strength"),
+                    row.get("novelty"),
+                    row.get("consumer_intent"),
+                    row.get("llm_rationale"),
+                    row.get("processing_model"),
+                    row.get("processed_at"),
                 )
                 for row in rows
             ],

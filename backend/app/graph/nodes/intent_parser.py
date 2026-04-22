@@ -10,6 +10,61 @@ SUPPORTED_MARKETS = ("HK", "KR", "TW", "SG")
 SUPPORTED_CATEGORIES = {"skincare", "haircare", "makeup", "supplements", "all"}
 SUPPORTED_ENTITY_TYPES = {"ingredient", "brand", "function"}
 
+PLANNER_SCHEMA_REFERENCE = """
+Relevant queryable tables and important columns:
+
+1. search_trends (Google Trends breakout table)
+- keyword TEXT
+- geo TEXT
+- snapshot_date DATE
+- index_value REAL
+- wow_delta REAL
+- is_breakout INTEGER
+- related_rising TEXT
+- llm_category TEXT
+- llm_subcategory TEXT
+- relevance_score REAL
+- source_batch_id TEXT
+Use for Google Trends questions. Market filter is `geo`; recency filter is `snapshot_date`.
+
+2. sales_data (weekly sales velocity table)
+- sku TEXT
+- product_name TEXT
+- brand TEXT
+- ingredient_tags TEXT
+- category TEXT
+- region TEXT
+- week_start DATE
+- units_sold INTEGER
+- revenue REAL
+- wow_velocity REAL
+- is_restocking INTEGER
+- source_batch_id TEXT
+Use for sales momentum and restocking questions. Market filter is `region`; recency filter is `week_start`.
+
+3. post_trend_signals (LLM-scored post signal table)
+- source_table TEXT
+- source_row_id TEXT
+- source_batch_id TEXT
+- search_keyword TEXT
+- input_text TEXT
+- region TEXT
+- category TEXT
+- trend_strength REAL
+- novelty REAL
+- consumer_intent REAL
+- llm_rationale TEXT
+- processing_model TEXT
+- processed_at DATETIME
+Use for social trend strength / novelty / consumer intent questions. Market filter is `region`; recency filter is `processed_at`.
+
+Column-name alignment notes:
+- Google Trends market column is `geo`.
+- Sales and post-trend-signals market column is `region`.
+- Search category column is `llm_category`; sales and post-trend-signals category column is `category`.
+- Recent Google Trends means `snapshot_date`; recent sales means `week_start`; recent post scoring means `processed_at`.
+""".strip()
+
 
 def _default_markets(state: TrendDiscoveryState) -> list[str]:
     market = state.get("market", "HK")
@@ -122,6 +177,7 @@ def build_intent_state_update(state: TrendDiscoveryState) -> TrendDiscoveryState
     llm_intent: QueryIntent | None = None
     tool_invocations: list[dict] = []
     if user_query:
+        system_prompt = "Return only structured intent fields as JSON."
         prompt = f"""
 You convert a trend-analysis request into strict structured intent.
 Use only these market codes: {list(SUPPORTED_MARKETS)}.
@@ -136,17 +192,21 @@ Request context:
 - requested_recency_days: {state.get("recency_days")}
 - requested_analysis_mode: {state.get("analysis_mode")}
 
+Schema reference:
+{PLANNER_SCHEMA_REFERENCE}
+
 User query:
 {user_query}
 """.strip()
         started_at = now_iso()
         try:
-            llm_intent = graph_llm.invoke_json_response(
+            llm_intent, trace = graph_llm.invoke_json_response_with_trace(
                 QueryIntent,
-                system_prompt="Return only structured intent fields as JSON.",
+                system_prompt=system_prompt,
                 user_prompt=prompt,
             )
         except Exception as exc:
+            trace = getattr(exc, "trace", None)
             tool_invocations.append(
                 make_tool_invocation(
                     node="intent_parser",
@@ -158,6 +218,13 @@ User query:
                     status="error",
                     input_summary=f"user_query={user_query[:200]}",
                     error=str(exc),
+                    system_prompt=(trace or {}).get("system_prompt", system_prompt),
+                    user_prompt=(trace or {}).get("user_prompt", prompt),
+                    response_text=(trace or {}).get("response_text"),
+                    messages=[
+                        {"role": "system", "content": (trace or {}).get("system_prompt", system_prompt)},
+                        {"role": "user", "content": (trace or {}).get("user_prompt", prompt)},
+                    ],
                 )
             )
             raise RuntimeError(f"[IntentParser] LLM intent parse failed: {exc!s}") from exc
@@ -176,7 +243,15 @@ User query:
                     f"entity_types={list(llm_intent.entity_types)} "
                     f"analysis_mode={llm_intent.analysis_mode}"
                 ),
-                metadata={"schema": "QueryIntent"},
+                metadata={"schema": "QueryIntent", "model": trace["model"], "duration_ms": trace["duration_ms"]},
+                system_prompt=trace["system_prompt"],
+                user_prompt=trace["user_prompt"],
+                response_text=trace["response_text"],
+                messages=[
+                    {"role": "system", "content": trace["system_prompt"]},
+                    {"role": "user", "content": trace["user_prompt"]},
+                    {"role": "assistant", "content": trace["response_text"] or ""},
+                ],
             )
         )
 

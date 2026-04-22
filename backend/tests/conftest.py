@@ -200,6 +200,7 @@ def test_database(tmp_path) -> Iterator[None]:
     original_path = settings.database_path
     original_tikhub = settings.tikhub_api_key
     original_openrouter = settings.openrouter_api_key
+    original_light_model = settings.light_model
     settings.database_path = tmp_path / "test.sqlite"
     settings.tikhub_api_key = None
     settings.openrouter_api_key = None
@@ -217,4 +218,5 @@ def test_database(tmp_path) -> Iterator[None]:
         settings.database_path = original_path
         settings.tikhub_api_key = original_tikhub
         settings.openrouter_api_key = original_openrouter
+        settings.light_model = original_light_model
         get_settings.cache_clear()

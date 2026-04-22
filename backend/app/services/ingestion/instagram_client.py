@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from app.core.limits import MAX_SOCIAL_POSTS_PER_KEYWORD
 from app.core.config import get_settings
 from app.db.repository import upsert_instagram_posts
 
@@ -135,9 +136,10 @@ def cleaned_posts_to_db_rows(
     *,
     search_keyword: str,
     source_batch_id: str | None = None,
+    max_rows: int = MAX_SOCIAL_POSTS_PER_KEYWORD,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for post in posts:
+    for post in posts[: max(1, max_rows)]:
         post_id = post.get("post_id")
         if post_id in (None, ""):
             continue
@@ -278,6 +280,7 @@ def run_instagram_fetch_clean_save(
     feed_type: str = DEFAULT_FEED_TYPE,
     client: InstagramClient | None = None,
     source_batch_id: str | None = None,
+    max_posts: int = MAX_SOCIAL_POSTS_PER_KEYWORD,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
     """
     Fetch from TikHub, extract posts, and upsert into instagram_posts.
@@ -291,6 +294,7 @@ def run_instagram_fetch_clean_save(
         envelope = c.fetch_hashtag_posts(keyword=candidate, feed_type=feed_type)
         posts = extract_instagram_posts(envelope)
         if posts:
+            posts = posts[: max(1, max_posts)]
             if candidate != keyword.strip().lstrip("#"):
                 logger.info(
                     "Instagram hashtag search for %r matched via fallback candidate %r",
@@ -299,7 +303,12 @@ def run_instagram_fetch_clean_save(
                 )
             break
 
-    rows = cleaned_posts_to_db_rows(posts, search_keyword=keyword, source_batch_id=source_batch_id)
+    rows = cleaned_posts_to_db_rows(
+        posts,
+        search_keyword=keyword,
+        source_batch_id=source_batch_id,
+        max_rows=max_posts,
+    )
     if rows:
         upsert_instagram_posts(rows)
     return envelope, posts, len(rows)

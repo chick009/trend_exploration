@@ -84,9 +84,9 @@ def _score_candidate(
     }
 
 
-def _invoke_verdicts(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _invoke_verdicts(candidates: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], graph_llm.LlmTrace | None]:
     if not candidates:
-        return {}
+        return {}, None
     payload = [
         {
             "canonical_term": candidate["canonical_term"],
@@ -105,6 +105,7 @@ def _invoke_verdicts(candidates: list[dict[str, Any]]) -> dict[str, dict[str, An
         }
         for candidate in candidates
     ]
+    system_prompt = "Return structured skeptical verdicts as JSON only."
     prompt = f"""
 You are a skeptical trend analyst reviewing candidate trends.
 For each candidate, challenge it on:
@@ -124,12 +125,12 @@ Return one verdict per canonical_term with:
 Candidates:
 {json.dumps(payload, default=str)}
 """.strip()
-    verdict_batch = graph_llm.invoke_json_response(
+    verdict_batch, trace = graph_llm.invoke_json_response_with_trace(
         SynthesizerVerdictBatch,
-        system_prompt="Return structured skeptical verdicts as JSON only.",
+        system_prompt=system_prompt,
         user_prompt=prompt,
     )
-    return {verdict.canonical_term: verdict.model_dump() for verdict in verdict_batch.verdicts}
+    return {verdict.canonical_term: verdict.model_dump() for verdict in verdict_batch.verdicts}, trace
 
 
 def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
@@ -227,8 +228,9 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
     tool_invocations: list[dict[str, Any]] = []
     verdict_started_at = now_iso()
     try:
-        verdicts = _invoke_verdicts(synthesized)
+        verdicts, trace = _invoke_verdicts(synthesized)
     except Exception as exc:
+        trace = getattr(exc, "trace", None)
         tool_invocations.append(
             make_tool_invocation(
                 node="evidence_synthesizer",
@@ -240,6 +242,15 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
                 status="error",
                 input_summary=f"candidates={len(synthesized)}",
                 error=str(exc),
+                system_prompt=(trace or {}).get("system_prompt"),
+                user_prompt=(trace or {}).get("user_prompt"),
+                response_text=(trace or {}).get("response_text"),
+                messages=[
+                    {"role": "system", "content": (trace or {}).get("system_prompt", "")},
+                    {"role": "user", "content": (trace or {}).get("user_prompt", "")},
+                ]
+                if trace
+                else None,
             )
         )
         raise RuntimeError(f"[Synthesizer] verdict generation failed: {exc!s}") from exc
@@ -254,7 +265,21 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
             status="success",
             input_summary=f"candidates={len(synthesized)}",
             output_summary=f"{len(verdicts)} verdicts returned",
-            metadata={"schema": "SynthesizerVerdictBatch"},
+            metadata={
+                "schema": "SynthesizerVerdictBatch",
+                "model": trace["model"] if trace else None,
+                "duration_ms": trace["duration_ms"] if trace else None,
+            },
+            system_prompt=trace["system_prompt"] if trace else None,
+            user_prompt=trace["user_prompt"] if trace else None,
+            response_text=trace["response_text"] if trace else None,
+            messages=[
+                {"role": "system", "content": trace["system_prompt"]},
+                {"role": "user", "content": trace["user_prompt"]},
+                {"role": "assistant", "content": trace["response_text"] or ""},
+            ]
+            if trace
+            else None,
         )
     )
     filtered_synthesized = []
@@ -284,7 +309,7 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
     if watch_list_only:
         guardrail_flags.append("Low-signal run: fewer than 3 confirmed trends; collapsing output into the watch list.")
     if confirmed_count == 0:
-        gate = "[ConfidenceGate] route=end (no confirmed trends)"
+        gate = "[ConfidenceGate] route=formatter (no confirmed trends)"
     elif watch_list_only:
         gate = "[ConfidenceGate] route=formatter (low_signal)"
     else:

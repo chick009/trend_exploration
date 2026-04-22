@@ -59,6 +59,12 @@ def _minimal_item_list_item() -> dict[str, Any]:
     }
 
 
+def _minimal_item_list_item_with_id(post_id: str) -> dict[str, Any]:
+    item = _minimal_item_list_item()
+    item["id"] = post_id
+    return item
+
+
 def test_normalize_tikhub_data_dict() -> None:
     inner = {"item_list": []}
     assert normalize_tikhub_data({"data": inner}) == inner
@@ -243,6 +249,25 @@ def test_run_tiktok_photo_fetch_clean_save_uses_real_pipeline(test_database, mon
     with connection_scope() as conn:
         c = conn.execute("SELECT COUNT(*) AS c FROM tiktok_photo_posts").fetchone()
     assert dict(c)["c"] == 1
+
+
+def test_run_tiktok_photo_fetch_clean_save_caps_saved_posts_per_keyword(test_database, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    settings.tikhub_api_key = "fake-token"
+
+    def fake_fetch(self: TikTokPhotoClient, **kwargs: Any) -> dict[str, Any]:
+        return {"data": {"item_list": [_minimal_item_list_item_with_id(f"tt-{index}") for index in range(7)]}}
+
+    monkeypatch.setattr(TikTokPhotoClient, "fetch_search_photo", fake_fetch)
+
+    env, posts, n = run_tiktok_photo_fetch_clean_save(keyword="kw", count=20, client=TikTokPhotoClient())
+    assert n == 5
+    assert len(posts) == 5
+    assert "data" in env
+
+    with connection_scope() as conn:
+        c = conn.execute("SELECT COUNT(*) AS c FROM tiktok_photo_posts").fetchone()
+    assert dict(c)["c"] == 5
 
 
 @pytest.mark.usefixtures("test_database")

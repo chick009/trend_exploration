@@ -29,6 +29,10 @@ class Settings(BaseSettings):
         default="qwen/qwen3.5-35b-a3b",
         validation_alias=AliasChoices("OPENROUTER_MODEL", "OPENAI_MODEL"),
     )
+    light_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LIGHT_MODEL"),
+    )
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     cors_origins: str = ""
     cors_origin_regex: str | None = r"https?://(localhost|127\.0\.0\.1)(:\d+)?$"
@@ -65,6 +69,9 @@ class Settings(BaseSettings):
         if raw == "*":
             return ["*"]
         return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+    def resolved_light_model(self) -> str:
+        return self.light_model or self.openrouter_model
 
 
 @lru_cache(maxsize=1)

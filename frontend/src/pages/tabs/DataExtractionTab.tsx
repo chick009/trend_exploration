@@ -182,14 +182,14 @@ export function DataExtractionTab({ workbench }: Props) {
             {filters.sources.includes("tiktok") ? (
               <div className="rounded-xl border border-white/10 bg-white/3 p-3">
                 <div className="text-xs font-semibold text-slate-200">TikTok photos</div>
-                <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Uses each approved keyword via TikHub photo search.</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-500">Uses each approved keyword via TikHub photo search, capped at 5 saved rows per keyword.</p>
                 <label className="mt-3 block space-y-1">
                   <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Photos per keyword</span>
                   <input
                     type="number"
                     value={filters.tiktokPhotosPerKeyword}
                     min={1}
-                    max={50}
+                    max={5}
                     onChange={(event) => actions.setTiktokPhotosPerKeyword(Number(event.target.value))}
                   />
                 </label>

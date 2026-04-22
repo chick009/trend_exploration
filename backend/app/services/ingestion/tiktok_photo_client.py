@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from app.core.limits import MAX_SOCIAL_POSTS_PER_KEYWORD
 from app.core.config import get_settings
 from app.db.repository import upsert_tiktok_photo_posts
 
@@ -163,9 +164,10 @@ def cleaned_posts_to_db_rows(
     *,
     search_keyword: str,
     source_batch_id: str | None = None,
+    max_rows: int = MAX_SOCIAL_POSTS_PER_KEYWORD,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for post in posts:
+    for post in posts[: max(1, max_rows)]:
         pid = post.get("id")
         if pid is None or pid == "":
             continue
@@ -295,21 +297,28 @@ def run_tiktok_photo_fetch_clean_save(
     cookie: str | None = None,
     client: TikTokPhotoClient | None = None,
     source_batch_id: str | None = None,
+    max_posts: int = MAX_SOCIAL_POSTS_PER_KEYWORD,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
     """
     Fetch from TikHub, extract posts, upsert into tiktok_photo_posts.
     Returns (envelope, posts, saved_count).
     """
     c = client or TikTokPhotoClient()
+    effective_max_posts = max(1, max_posts)
     envelope = c.fetch_search_photo(
         keyword=keyword,
-        count=count,
+        count=min(max(count, 1), effective_max_posts),
         offset=offset,
         search_id=search_id,
         cookie=cookie,
     )
-    posts = extract_tiktok_photo_posts(envelope)
-    rows = cleaned_posts_to_db_rows(posts, search_keyword=keyword, source_batch_id=source_batch_id)
+    posts = extract_tiktok_photo_posts(envelope)[:effective_max_posts]
+    rows = cleaned_posts_to_db_rows(
+        posts,
+        search_keyword=keyword,
+        source_batch_id=source_batch_id,
+        max_rows=effective_max_posts,
+    )
     if rows:
         upsert_tiktok_photo_posts(rows)
     return envelope, posts, len(rows)

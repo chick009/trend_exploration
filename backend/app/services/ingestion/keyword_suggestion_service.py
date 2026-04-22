@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from pydantic import BaseModel, Field
 
+from app.core.config import get_settings
 from app.db.repository import get_entity_dictionary
 from app.graph.llm import invoke_json_response
 from app.models.schemas import KeywordSuggestionRequest, KeywordSuggestionResponse, SuggestedKeyword
@@ -53,6 +54,7 @@ class KeywordSuggestionService:
         )
 
     def _llm_suggestions(self, request: KeywordSuggestionRequest) -> list[SuggestedKeyword]:
+        settings = get_settings()
         try:
             batch = invoke_json_response(
                 KeywordSuggestionBatch,
@@ -70,6 +72,7 @@ class KeywordSuggestionService:
                     "Return a balanced list of target keywords the user can review and edit before extraction.\n"
                     "Each suggestion should include a short rationale."
                 ),
+                model=settings.resolved_light_model(),
             )
         except Exception:
             return []

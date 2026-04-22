@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.limits import MAX_SOCIAL_POSTS_PER_KEYWORD
+
 
 Market = Literal["HK", "KR", "TW", "SG", "cross"]
 Category = Literal["skincare", "haircare", "makeup", "supplements", "all"]
@@ -46,8 +48,8 @@ class ExtractionRequestBase(BaseModel):
     tiktok_photo_count_per_keyword: int | None = Field(
         default=None,
         ge=1,
-        le=50,
-        description="TikTok photo search page size per approved keyword. When omitted, a default page size is used.",
+        le=MAX_SOCIAL_POSTS_PER_KEYWORD,
+        description="TikTok photo search page size per approved keyword. Maximum 5 rows are persisted per keyword.",
     )
     instagram_feed_type: Literal["top", "recent"] = Field(
         default="top",
@@ -190,6 +192,11 @@ class TrendReport(BaseModel):
     guardrail_flags: list[str] = Field(default_factory=list)
 
 
+class ToolInvocationMessage(BaseModel):
+    role: str
+    content: str
+
+
 class ToolInvocation(BaseModel):
     """A single tool call emitted while a LangGraph analysis run executes.
 
@@ -213,6 +220,10 @@ class ToolInvocation(BaseModel):
     output_summary: str | None = None
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    system_prompt: str | None = None
+    user_prompt: str | None = None
+    response_text: str | None = None
+    messages: list[ToolInvocationMessage] = Field(default_factory=list)
 
 
 class RunStatusResponse(BaseModel):
@@ -224,6 +235,7 @@ class RunStatusResponse(BaseModel):
     stats: dict[str, Any] = Field(default_factory=dict)
     execution_trace: list[str] = Field(default_factory=list)
     tool_invocations: list[ToolInvocation] = Field(default_factory=list)
+    node_outputs: dict[str, Any] = Field(default_factory=dict)
     guardrail_flags: list[str] = Field(default_factory=list)
     target_keywords: list[str] = Field(default_factory=list)
     suggested_keywords: list[str] = Field(default_factory=list)

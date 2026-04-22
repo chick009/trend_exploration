@@ -7,15 +7,43 @@ import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Data
 import { formatDateTime, formatNumber } from "../../lib/utils";
 
 /** Tables surfaced in the UI (fixed order). Backend may omit tables that do not exist yet. */
-const WAREHOUSE_TABLE_ORDER = ["sales_data", "tiktok_photo_posts", "instagram_posts", "trend_exploration"] as const;
+const WAREHOUSE_TABLE_ORDER = [
+  "sales_data",
+  "search_trends",
+  "tiktok_photo_posts",
+  "instagram_posts",
+  "post_trend_signals",
+  "trend_exploration",
+] as const;
 
 const PREVIEW_ROW_LIMIT = 5;
 const FULL_PAGE_ROW_LIMIT = 100;
 
 const SORTABLE_COLUMNS: Record<string, string[]> = {
   sales_data: ["sku", "brand", "category", "region", "week_start", "units_sold", "revenue", "wow_velocity"],
+  search_trends: [
+    "keyword",
+    "geo",
+    "snapshot_date",
+    "wow_delta",
+    "index_value",
+    "processed_at",
+    "last_updated",
+    "source_batch_id",
+  ],
   tiktok_photo_posts: ["id", "search_keyword", "create_time", "create_time_unix", "is_ad", "fetched_at", "source_batch_id"],
   instagram_posts: ["post_id", "search_keyword", "code", "username", "likes", "comments", "views", "created_at", "fetched_at", "source_batch_id"],
+  post_trend_signals: [
+    "id",
+    "source_table",
+    "region",
+    "category",
+    "trend_strength",
+    "novelty",
+    "consumer_intent",
+    "processed_at",
+    "source_batch_id",
+  ],
   trend_exploration: [
     "trend_id",
     "canonical_term",
@@ -124,8 +152,8 @@ export function SqlDatabaseTab() {
         <CardHeader>
           <CardTitle>Warehouse tables</CardTitle>
           <CardDescription>
-            Sales, social ingest tables, and persisted{" "}
-            <code className="inline-code">trend_exploration</code> rows (per-run trend snapshots).
+            Sales, Google Trends search signals (<code className="inline-code">search_trends</code>), social ingest tables, derived signals, and
+            persisted <code className="inline-code">trend_exploration</code> rows.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
