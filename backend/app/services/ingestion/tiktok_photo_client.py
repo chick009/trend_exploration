@@ -225,6 +225,12 @@ class TikTokPhotoClient:
             except httpx.HTTPStatusError as exc:
                 last_exception = exc
                 status_code = exc.response.status_code
+                if status_code == 400:
+                    logger.warning(
+                        "TikHub rejected %s with 400. response=%s",
+                        context,
+                        exc.response.text[:500],
+                    )
                 if status_code < 500 or attempt == MAX_RETRIES:
                     raise
             except httpx.RequestError as exc:
@@ -257,12 +263,14 @@ class TikTokPhotoClient:
             raise RuntimeError("TIKHUB_API_KEY is not configured")
 
         headers = {"Authorization": f"Bearer {self.settings.tikhub_api_key}"}
+        normalized_keyword = keyword.strip()
+        effective_cookie = cookie if cookie not in (None, "") else self.settings.tikhub_cookie
         params: dict[str, Any] = {
-            "keyword": keyword,
+            "keyword": normalized_keyword,
             "count": count,
-            "offset": offset,
+            "offset": offset if offset > 0 else None,
             "search_id": search_id,
-            "cookie": cookie,
+            "cookie": effective_cookie,
         }
 
         with httpx.Client(
@@ -274,7 +282,7 @@ class TikTokPhotoClient:
                 client,
                 FETCH_SEARCH_PHOTO_PATH,
                 params=params,
-                context=f"fetch_search_photo keyword={keyword!r}",
+                context=f"fetch_search_photo keyword={normalized_keyword!r}",
             )
 
 

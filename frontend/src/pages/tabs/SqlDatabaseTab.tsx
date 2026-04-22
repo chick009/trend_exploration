@@ -2,17 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "../../api/client";
+import type { DbTableInfo } from "../../api/types";
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, JsonView, Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui";
 import { formatDateTime, formatNumber } from "../../lib/utils";
 
+/** Tables surfaced in the UI (fixed order). Backend may omit tables that do not exist yet. */
+const WAREHOUSE_TABLE_ORDER = ["sales_data", "tiktok_photo_posts", "instagram_posts"] as const;
+
+const PREVIEW_ROW_LIMIT = 5;
+const FULL_PAGE_ROW_LIMIT = 100;
+
 const SORTABLE_COLUMNS: Record<string, string[]> = {
-  entity_dictionary: ["canonical_term", "entity_type", "hb_category", "origin_market"],
-  search_trends: ["keyword", "geo", "snapshot_date", "wow_delta", "index_value", "processed_at", "last_updated", "source_batch_id"],
-  social_posts: ["id", "post_date", "liked_count", "comment_count", "share_count", "engagement_score", "positivity_score", "processed_at", "fetched_at", "source_batch_id"],
   sales_data: ["sku", "brand", "category", "region", "week_start", "units_sold", "revenue", "wow_velocity"],
-  trend_exploration: ["trend_id", "canonical_term", "entity_type", "hb_category", "virality_score", "confidence_tier", "market", "analysis_date", "status"],
-  ingestion_runs: ["id", "status", "market", "category", "recent_days", "started_at", "completed_at", "source_batch_id"],
-  analysis_runs: ["id", "status", "market", "category", "recency_days", "analysis_mode", "started_at", "completed_at"],
   tiktok_photo_posts: ["id", "search_keyword", "create_time", "create_time_unix", "is_ad", "fetched_at", "source_batch_id"],
   instagram_posts: ["post_id", "search_keyword", "code", "username", "likes", "comments", "views", "created_at", "fetched_at", "source_batch_id"],
 };
@@ -32,21 +33,32 @@ export function SqlDatabaseTab() {
   const [sortColumn, setSortColumn] = useState<string>("");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [offset, setOffset] = useState(0);
+  const [showAllRows, setShowAllRows] = useState(false);
 
   const tablesQuery = useQuery({
     queryKey: ["db-tables"],
     queryFn: () => api.listTables(),
   });
 
+  const warehouseTables = useMemo(() => {
+    const all = tablesQuery.data?.tables ?? [];
+    const byName = new Map(all.map((t) => [t.name, t]));
+    return WAREHOUSE_TABLE_ORDER.map((name) => byName.get(name)).filter((t): t is DbTableInfo => Boolean(t));
+  }, [tablesQuery.data?.tables]);
+
   useEffect(() => {
-    if (!selectedTable && tablesQuery.data?.tables.length) {
-      setSelectedTable(tablesQuery.data.tables[0].name);
+    if (warehouseTables.length && (!selectedTable || !warehouseTables.some((t) => t.name === selectedTable))) {
+      setSelectedTable(warehouseTables[0].name);
     }
-  }, [selectedTable, tablesQuery.data?.tables]);
+  }, [selectedTable, warehouseTables]);
 
   useEffect(() => {
     setOffset(0);
-  }, [selectedTable, search, column, sortColumn, sortDirection]);
+  }, [selectedTable, search, column, sortColumn, sortDirection, showAllRows]);
+
+  useEffect(() => {
+    setShowAllRows(false);
+  }, [selectedTable]);
 
   const schemaQuery = useQuery({
     queryKey: ["db-schema", selectedTable],
@@ -54,12 +66,15 @@ export function SqlDatabaseTab() {
     enabled: Boolean(selectedTable),
   });
 
+  const rowLimit = showAllRows ? FULL_PAGE_ROW_LIMIT : PREVIEW_ROW_LIMIT;
+  const rowOffset = showAllRows ? offset : 0;
+
   const rowsQuery = useQuery({
-    queryKey: ["db-rows", selectedTable, search, column, sortColumn, sortDirection, offset],
+    queryKey: ["db-rows", selectedTable, search, column, sortColumn, sortDirection, rowOffset, rowLimit],
     queryFn: () =>
       api.getTableRows(selectedTable, {
-        limit: 25,
-        offset,
+        limit: rowLimit,
+        offset: rowOffset,
         search: search || undefined,
         column: column || undefined,
         order_by: sortColumn || undefined,
@@ -97,10 +112,15 @@ export function SqlDatabaseTab() {
       <Card className="h-fit xl:sticky xl:top-28">
         <CardHeader>
           <CardTitle>Warehouse tables</CardTitle>
-          <CardDescription>Browse the read-only SQLite tables backing the dashboard and extraction views.</CardDescription>
+          <CardDescription>Sales, TikTok photo posts, and Instagram posts stored in SQLite.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {tablesQuery.data?.tables.map((table) => (
+          {!tablesQuery.isLoading && warehouseTables.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-sm text-slate-500">
+              None of the expected warehouse tables are present in this database yet.
+            </p>
+          ) : null}
+          {warehouseTables.map((table) => (
             <button
               key={table.name}
               type="button"
@@ -131,7 +151,7 @@ export function SqlDatabaseTab() {
         <CardHeader className="gap-3">
           <CardTitle>{selectedTable || "Select a table"}</CardTitle>
           <CardDescription>
-            Inspect schema metadata and query paginated rows through the backend whitelist-protected DB browser API.
+            Preview five rows by default, then load the full result set (up to {FULL_PAGE_ROW_LIMIT} rows per request) when you need more detail.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -204,19 +224,54 @@ export function SqlDatabaseTab() {
 
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm text-slate-400">
-                  Showing {formatNumber((rowsQuery.data?.rows.length ?? 0) + offset)} of {formatNumber(rowsQuery.data?.total ?? 0)} rows
+                  {showAllRows ? (
+                    (() => {
+                      const slice = rowsQuery.data?.rows.length ?? 0;
+                      const total = rowsQuery.data?.total ?? 0;
+                      if (slice === 0) {
+                        return <>No rows match the current filter.</>;
+                      }
+                      return (
+                        <>
+                          Showing {formatNumber(rowOffset + 1)}–{formatNumber(rowOffset + slice)} of {formatNumber(total)} rows
+                        </>
+                      );
+                    })()
+                  ) : (
+                    <>
+                      Preview: {formatNumber(rowsQuery.data?.rows.length ?? 0)} of {formatNumber(rowsQuery.data?.total ?? 0)} rows
+                    </>
+                  )}
                 </div>
-                <div className="flex gap-3">
-                  <Button variant="secondary" disabled={offset === 0} onClick={() => setOffset((current) => Math.max(0, current - 25))}>
-                    Previous
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={(rowsQuery.data?.rows.length ?? 0) < 25}
-                    onClick={() => setOffset((current) => current + 25)}
-                  >
-                    Next
-                  </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!showAllRows && (rowsQuery.data?.total ?? 0) > PREVIEW_ROW_LIMIT ? (
+                    <Button variant="primary" size="sm" onClick={() => setShowAllRows(true)}>
+                      Show all ({formatNumber(rowsQuery.data?.total ?? 0)})
+                    </Button>
+                  ) : null}
+                  {showAllRows ? (
+                    <>
+                      <Button variant="ghost" size="sm" onClick={() => setShowAllRows(false)}>
+                        Back to preview
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={rowOffset === 0}
+                        onClick={() => setOffset((current) => Math.max(0, current - FULL_PAGE_ROW_LIMIT))}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={(rowsQuery.data?.rows.length ?? 0) < FULL_PAGE_ROW_LIMIT}
+                        onClick={() => setOffset((current) => current + FULL_PAGE_ROW_LIMIT)}
+                      >
+                        Next
+                      </Button>
+                    </>
+                  ) : null}
                 </div>
               </div>
             </TabsContent>

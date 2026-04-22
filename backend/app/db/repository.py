@@ -276,11 +276,13 @@ def create_ingestion_run(run_id: str, batch_id: str, request: IngestionRunReques
             """
             INSERT INTO ingestion_runs (
                 id, status, market, category, recent_days, from_timestamp, to_timestamp,
-                sources, seed_terms, source_batch_id, guardrail_flags, stats_json
-            ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sources, seed_terms, target_keywords, suggested_keywords, recency_support_json,
+                source_batch_id, guardrail_flags, stats_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
+                "queued",
                 request.market,
                 request.category,
                 request.recent_days,
@@ -288,6 +290,9 @@ def create_ingestion_run(run_id: str, batch_id: str, request: IngestionRunReques
                 request.to_timestamp.isoformat() if request.to_timestamp else None,
                 json_dumps(request.sources),
                 json_dumps(request.seed_terms),
+                json_dumps(request.target_keywords),
+                json_dumps(request.suggested_keywords),
+                json_dumps([]),
                 batch_id,
                 json_dumps([]),
                 json_dumps({}),
@@ -302,6 +307,7 @@ def update_ingestion_run(
     stats: dict[str, Any] | None = None,
     error_message: str | None = None,
     guardrail_flags: list[str] | None = None,
+    recency_support: list[dict[str, Any]] | None = None,
 ) -> None:
     completed_at = datetime.utcnow().isoformat() if status in {"completed", "failed"} else None
     with connection_scope() as connection:
@@ -312,6 +318,7 @@ def update_ingestion_run(
                 stats_json = COALESCE(?, stats_json),
                 error_message = COALESCE(?, error_message),
                 guardrail_flags = COALESCE(?, guardrail_flags),
+                recency_support_json = COALESCE(?, recency_support_json),
                 completed_at = COALESCE(?, completed_at)
             WHERE id = ?
             """,
@@ -320,6 +327,7 @@ def update_ingestion_run(
                 json_dumps(stats) if stats is not None else None,
                 error_message,
                 json_dumps(guardrail_flags) if guardrail_flags is not None else None,
+                json_dumps(recency_support) if recency_support is not None else None,
                 completed_at,
                 run_id,
             ),
@@ -363,6 +371,7 @@ def update_analysis_run(
     report: dict[str, Any] | None = None,
     error_message: str | None = None,
     source_batch_ids: list[str] | None = None,
+    tool_invocations: list[dict[str, Any]] | None = None,
 ) -> None:
     completed_at = datetime.utcnow().isoformat() if status in {"completed", "failed"} else None
     with connection_scope() as connection:
@@ -374,6 +383,7 @@ def update_analysis_run(
                 report_json = COALESCE(?, report_json),
                 error_message = COALESCE(?, error_message),
                 source_batch_ids = COALESCE(?, source_batch_ids),
+                tool_invocations_json = COALESCE(?, tool_invocations_json),
                 completed_at = COALESCE(?, completed_at)
             WHERE id = ?
             """,
@@ -383,6 +393,7 @@ def update_analysis_run(
                 json_dumps(report) if report is not None else None,
                 error_message,
                 json_dumps(source_batch_ids) if source_batch_ids is not None else None,
+                json_dumps(tool_invocations) if tool_invocations is not None else None,
                 completed_at,
                 run_id,
             ),
@@ -464,15 +475,6 @@ def get_prior_trend_snapshot(market: str, category: str, lookback_days: int = 30
 
 def get_latest_source_health() -> list[dict[str, Any]]:
     with connection_scope() as connection:
-        social_row = connection.execute(
-            """
-            SELECT MAX(processed_at) AS latest_completed_at,
-                   source_batch_id AS latest_batch_id,
-                   COUNT(*) AS row_count
-            FROM social_posts
-            WHERE source_batch_id IS NOT NULL
-            """
-        ).fetchone()
         search_row = connection.execute(
             """
             SELECT MAX(processed_at) AS latest_completed_at,
@@ -515,7 +517,6 @@ def get_latest_source_health() -> list[dict[str, Any]]:
             """
         ).fetchone()
     return [
-        {"source": "rednote", **dict(social_row)},
         {"source": "google_trends", **dict(search_row)},
         {"source": "sales", **dict(sales_row)},
         {"source": "tiktok", **dict(tiktok_row)},

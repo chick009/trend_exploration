@@ -18,6 +18,8 @@ from app.services.ingestion.scheduler import build_scheduler
 
 settings = get_settings()
 scheduler = build_scheduler() if settings.enable_scheduler else None
+cors_origins = settings.parsed_cors_origins()
+allow_credentials = settings.cors_allow_credentials and "*" not in cors_origins
 
 
 @asynccontextmanager
@@ -35,8 +37,9 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -5,9 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from app.graph.nodes.formatter import run_report_formatter
-from app.graph.nodes.intent_parser import parse_query_intent
 from app.graph.nodes.memory import run_memory_read, run_memory_write
-from app.graph.nodes.sql_dispatcher import run_sql_dispatcher
 from app.graph.nodes.synthesizer import run_evidence_synthesizer
 from app.graph.nodes.trend_gen import run_trend_gen_agent
 from app.graph.state import TrendDiscoveryState
@@ -30,17 +28,13 @@ def confidence_gate(state: TrendDiscoveryState) -> str:
 def build_graph():
     builder = StateGraph(TrendDiscoveryState)
     builder.add_node("memory_read", run_memory_read)
-    builder.add_node("intent_parser", parse_query_intent)
-    builder.add_node("sql_dispatcher", run_sql_dispatcher)
     builder.add_node("trend_gen_agent", run_trend_gen_agent)
     builder.add_node("evidence_synthesizer", run_evidence_synthesizer)
     builder.add_node("formatter", run_report_formatter)
     builder.add_node("memory_write", run_memory_write)
 
     builder.add_edge(START, "memory_read")
-    builder.add_edge("memory_read", "intent_parser")
-    builder.add_edge("intent_parser", "sql_dispatcher")
-    builder.add_conditional_edges("sql_dispatcher", route_trend_gen)
+    builder.add_conditional_edges("memory_read", route_trend_gen)
     builder.add_edge("trend_gen_agent", "evidence_synthesizer")
     builder.add_conditional_edges(
         "evidence_synthesizer",

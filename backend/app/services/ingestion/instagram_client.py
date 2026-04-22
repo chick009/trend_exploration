@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -17,6 +18,30 @@ FETCH_HASHTAG_POSTS_PATH = "/api/v1/instagram/v2/fetch_hashtag_posts"
 REQUEST_TIMEOUT_SECONDS = 45
 MAX_RETRIES = 3
 DEFAULT_FEED_TYPE = "top"
+GENERIC_HASHTAG_TOKENS = {
+    "and",
+    "beauty",
+    "care",
+    "cleanser",
+    "cream",
+    "essence",
+    "for",
+    "gel",
+    "lotion",
+    "mask",
+    "of",
+    "oil",
+    "repair",
+    "serum",
+    "skin",
+    "skincare",
+    "solution",
+    "spf",
+    "sun",
+    "toner",
+    "wash",
+    "with",
+}
 
 
 def normalize_tikhub_data(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -142,6 +167,29 @@ def cleaned_posts_to_db_rows(
     return rows
 
 
+def build_hashtag_keyword_candidates(keyword: str) -> list[str]:
+    trimmed = keyword.strip().lstrip("#")
+    if not trimmed:
+        return []
+
+    tokens = [token.casefold() for token in re.findall(r"[A-Za-z0-9_]+", trimmed)]
+    compact = "".join(tokens)
+    filtered_tokens = [token for token in tokens if token not in GENERIC_HASHTAG_TOKENS]
+    compact_filtered = "".join(filtered_tokens)
+
+    candidates: list[str] = []
+    for candidate in (
+        trimmed,
+        compact,
+        compact_filtered,
+        filtered_tokens[0] if filtered_tokens else "",
+    ):
+        value = candidate.strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
 class InstagramClient:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -170,6 +218,12 @@ class InstagramClient:
             except httpx.HTTPStatusError as exc:
                 last_exception = exc
                 status_code = exc.response.status_code
+                if status_code == 400:
+                    logger.warning(
+                        "TikHub rejected %s with 400. response=%s",
+                        context,
+                        exc.response.text[:500],
+                    )
                 if status_code < 500 or attempt == MAX_RETRIES:
                     raise
             except httpx.RequestError as exc:
@@ -199,8 +253,9 @@ class InstagramClient:
             raise RuntimeError("TIKHUB_API_KEY is not configured")
 
         headers = {"Authorization": f"Bearer {self.settings.tikhub_api_key}"}
+        normalized_keyword = keyword.strip().lstrip("#")
         params: dict[str, Any] = {
-            "keyword": keyword,
+            "keyword": normalized_keyword,
             "feed_type": feed_type,
         }
 
@@ -213,7 +268,7 @@ class InstagramClient:
                 client,
                 FETCH_HASHTAG_POSTS_PATH,
                 params=params,
-                context=f"fetch_hashtag_posts keyword={keyword!r} feed_type={feed_type!r}",
+                context=f"fetch_hashtag_posts keyword={normalized_keyword!r} feed_type={feed_type!r}",
             )
 
 
@@ -229,8 +284,21 @@ def run_instagram_fetch_clean_save(
     Returns (envelope, posts, saved_count).
     """
     c = client or InstagramClient()
-    envelope = c.fetch_hashtag_posts(keyword=keyword, feed_type=feed_type)
-    posts = extract_instagram_posts(envelope)
+    attempted_keywords = build_hashtag_keyword_candidates(keyword)
+    envelope: dict[str, Any] = {}
+    posts: list[dict[str, Any]] = []
+    for candidate in attempted_keywords:
+        envelope = c.fetch_hashtag_posts(keyword=candidate, feed_type=feed_type)
+        posts = extract_instagram_posts(envelope)
+        if posts:
+            if candidate != keyword.strip().lstrip("#"):
+                logger.info(
+                    "Instagram hashtag search for %r matched via fallback candidate %r",
+                    keyword,
+                    candidate,
+                )
+            break
+
     rows = cleaned_posts_to_db_rows(posts, search_keyword=keyword, source_batch_id=source_batch_id)
     if rows:
         upsert_instagram_posts(rows)

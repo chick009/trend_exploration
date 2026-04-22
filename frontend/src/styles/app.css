@@ -3,6 +3,7 @@
 
 :root {
   color-scheme: dark;
+  font-size: 14px;
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --bg: #07111f;
   --bg-elevated: #101a2d;
@@ -86,10 +87,11 @@ a {
   select,
   textarea {
     border: 1px solid var(--border);
-    border-radius: 0.9rem;
+    border-radius: 0.65rem;
     background: rgba(15, 23, 42, 0.82);
     color: var(--text);
-    padding: 0.75rem 0.9rem;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.92rem;
     transition:
       border-color 150ms ease,
       box-shadow 150ms ease,

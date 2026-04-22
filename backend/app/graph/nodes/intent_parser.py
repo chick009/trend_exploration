@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from app.graph import llm as graph_llm
+from app.graph.nodes.sql_dispatcher import select_query_plan
 from app.graph.schemas import QueryIntent
 from app.graph.state import TrendDiscoveryState
+from app.graph.tools import make_tool_invocation, now_iso
 
 SUPPORTED_MARKETS = ("HK", "KR", "TW", "SG")
 SUPPORTED_CATEGORIES = {"skincare", "haircare", "makeup", "supplements", "all"}
@@ -61,17 +63,64 @@ def _merge_intent(state: TrendDiscoveryState, llm_intent: QueryIntent | None) ->
     )
 
 
-def parse_query_intent(state: TrendDiscoveryState) -> TrendDiscoveryState:
+def _render_category_clause(column_name: str, category: str) -> str:
+    if category == "all":
+        return ""
+    return f" AND COALESCE({column_name}, 'all') = '{category}'"
+
+
+def _build_query_params(query_intent: QueryIntent) -> dict[str, object]:
+    query_plan = list(select_query_plan(query_intent.model_dump()))
+    markets_sql = ", ".join(f"'{market}'" for market in query_intent.markets)
+    recency_sql = f"-{query_intent.recency_days} days"
+    sql_preview: dict[str, str] = {}
+
+    if "social" in query_plan:
+        sql_preview["social"] = (
+            "SELECT COALESCE(llm_entities, entity_mentions, '[]') AS entity_list, "
+            "AVG(engagement_score) AS avg_engagement, AVG(positivity_score) AS avg_positivity_score, "
+            "COUNT(*) AS post_count FROM social_posts "
+            f"WHERE region IN ({markets_sql}) AND date(post_date) >= date('now', '{recency_sql}')"
+            f"{_render_category_clause('llm_category', query_intent.category)} AND relevance_score >= 0.4 "
+            "GROUP BY entity_list"
+        )
+    if "search" in query_plan:
+        sql_preview["search"] = (
+            "SELECT keyword, wow_delta, index_value, source_batch_id FROM search_trends "
+            f"WHERE geo IN ({markets_sql}) AND date(snapshot_date) >= date('now', '{recency_sql}') "
+            f"AND is_breakout = 1{_render_category_clause('llm_category', query_intent.category)} "
+            "AND relevance_score >= 0.4 ORDER BY wow_delta DESC"
+        )
+    if "sales" in query_plan:
+        sql_preview["sales"] = (
+            "SELECT ingredient_tags, brand, category, AVG(wow_velocity) AS avg_velocity, "
+            "SUM(units_sold) AS total_units, SUM(is_restocking) AS restock_count, source_batch_id "
+            "FROM sales_data "
+            f"WHERE region IN ({markets_sql}) AND date(week_start) >= date('now', '{recency_sql}')"
+            f"{_render_category_clause('category', query_intent.category)} "
+            "GROUP BY brand, ingredient_tags, category, source_batch_id ORDER BY avg_velocity DESC"
+        )
+
+    return {
+        "query_plan": query_plan,
+        "sql_preview": sql_preview,
+    }
+
+
+def build_intent_state_update(state: TrendDiscoveryState) -> TrendDiscoveryState:
     market = state.get("market", "HK")
     if market not in {*SUPPORTED_MARKETS, "cross"}:
+        fallback_intent = _default_intent(state)
         return {
-            "query_intent": _default_intent(state).model_dump(),
+            "query_intent": fallback_intent.model_dump(),
+            "query_params": _build_query_params(fallback_intent),
             "execution_log": [f"[IntentParser] unsupported market={market!r}; expected one of {[*SUPPORTED_MARKETS, 'cross']}"],
             "guardrail_flags": [f"Unsupported market: {market!r}"],
         }
 
     user_query = (state.get("user_query") or "").strip()
     llm_intent: QueryIntent | None = None
+    tool_invocations: list[dict] = []
     if user_query:
         prompt = f"""
 You convert a trend-analysis request into strict structured intent.
@@ -90,15 +139,53 @@ Request context:
 User query:
 {user_query}
 """.strip()
-        llm_intent = graph_llm.get_chat_model(temperature=0.0).with_structured_output(QueryIntent).invoke(
-            [("system", "Return only structured intent fields."), ("human", prompt)]
+        started_at = now_iso()
+        try:
+            llm_intent = graph_llm.invoke_json_response(
+                QueryIntent,
+                system_prompt="Return only structured intent fields as JSON.",
+                user_prompt=prompt,
+            )
+        except Exception as exc:
+            tool_invocations.append(
+                make_tool_invocation(
+                    node="intent_parser",
+                    tool="llm.intent_parser",
+                    tool_kind="llm",
+                    title="LLM: parse user query into structured intent",
+                    started_at=started_at,
+                    completed_at=now_iso(),
+                    status="error",
+                    input_summary=f"user_query={user_query[:200]}",
+                    error=str(exc),
+                )
+            )
+            raise RuntimeError(f"[IntentParser] LLM intent parse failed: {exc!s}") from exc
+        tool_invocations.append(
+            make_tool_invocation(
+                node="intent_parser",
+                tool="llm.intent_parser",
+                tool_kind="llm",
+                title="LLM: parse user query into structured intent",
+                started_at=started_at,
+                completed_at=now_iso(),
+                status="success",
+                input_summary=f"user_query={user_query[:200]}",
+                output_summary=(
+                    f"markets={list(llm_intent.markets)} category={llm_intent.category} "
+                    f"entity_types={list(llm_intent.entity_types)} "
+                    f"analysis_mode={llm_intent.analysis_mode}"
+                ),
+                metadata={"schema": "QueryIntent"},
+            )
         )
 
     query_intent = _merge_intent(state, llm_intent)
+    query_params = _build_query_params(query_intent)
     log_lines = [
         (
             "[IntentParser] "
-            f"markets={query_intent.markets} category={query_intent.category} "
+            f"text2sql plan={query_params['query_plan']} markets={query_intent.markets} category={query_intent.category} "
             f"recency_days={query_intent.recency_days} analysis_mode={query_intent.analysis_mode} "
             f"entity_types={query_intent.entity_types}"
         )
@@ -107,4 +194,13 @@ User query:
         log_lines.append(f"[IntentParser] focus_hint={query_intent.focus_hint}")
     if user_query:
         log_lines.append(f"[IntentParser] user_query={user_query[:500]}{'…' if len(user_query) > 500 else ''}")
-    return {"query_intent": query_intent.model_dump(), "execution_log": log_lines}
+    return {
+        "query_intent": query_intent.model_dump(),
+        "query_params": query_params,
+        "execution_log": log_lines,
+        "tool_invocations": tool_invocations,
+    }
+
+
+def parse_query_intent(state: TrendDiscoveryState) -> TrendDiscoveryState:
+    return build_intent_state_update(state)

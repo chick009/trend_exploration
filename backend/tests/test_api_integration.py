@@ -1,8 +1,42 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from app.main import app
+
+
+def test_health_preflight_allows_local_frontend_origin(test_database) -> None:
+    with TestClient(app) as client:
+        response = client.options(
+            "/health",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_keyword_suggestion_endpoint_returns_keywords_and_recency_support(test_database) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/ingestion_runs/keyword_suggestions",
+            json={
+                "market": "HK",
+                "category": "skincare",
+                "recent_days": 7,
+                "sources": ["google_trends", "instagram", "sales"],
+                "max_target_keywords": 4,
+            },
+        )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["suggestions"]
+    assert len(payload["suggestions"]) <= 4
+    assert {item["source"] for item in payload["recency_support"]} == {"google_trends", "instagram", "sales"}
 
 
 def test_ingestion_accepts_tiktok_in_sources(test_database) -> None:
@@ -15,9 +49,26 @@ def test_ingestion_accepts_tiktok_in_sources(test_database) -> None:
                 "category": "skincare",
                 "recent_days": 7,
                 "sources": ["tiktok", "sales"],
+                "target_keywords": ["alpha"],
+                "suggested_keywords": ["alpha"],
             },
         )
     assert response.status_code == 200, response.text
+
+
+def test_ingestion_rejects_rednote_source(test_database) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/ingestion_runs",
+            json={
+                "market": "HK",
+                "category": "skincare",
+                "recent_days": 7,
+                "sources": ["rednote", "sales"],
+                "target_keywords": ["alpha"],
+            },
+        )
+    assert response.status_code == 422, response.text
 
 
 def test_ingestion_then_analysis_flow(test_database) -> None:
@@ -31,7 +82,9 @@ def test_ingestion_then_analysis_flow(test_database) -> None:
                 "market": "HK",
                 "category": "skincare",
                 "recent_days": 7,
-                "sources": ["rednote", "google_trends", "sales"],
+                "sources": ["google_trends", "sales"],
+                "target_keywords": ["niacinamide", "Beauty of Joseon"],
+                "suggested_keywords": ["niacinamide", "Beauty of Joseon"],
             },
         )
         assert ingestion_response.status_code == 200
@@ -140,3 +193,41 @@ def test_recent_run_list_endpoints_return_paginated_items(test_database) -> None
         assert analysis_payload["total"] >= 1
         assert len(analysis_payload["items"]) >= 1
         assert analysis_payload["items"][0]["execution_trace"] is not None
+
+
+def test_analysis_stream_endpoint_returns_incremental_backend_updates(test_database) -> None:
+    with TestClient(app) as client:
+        ingestion_response = client.post(
+            "/ingestion_runs",
+            json={
+                "market": "HK",
+                "category": "skincare",
+                "recent_days": 7,
+                "sources": ["google_trends", "sales"],
+                "target_keywords": ["niacinamide"],
+            },
+        )
+        assert ingestion_response.status_code == 200
+
+        response = client.post(
+            "/analysis_runs/stream",
+            json={
+                "market": "HK",
+                "category": "skincare",
+                "recency_days": 14,
+                "analysis_mode": "single_market",
+                "query": "Focus on barrier repair ingredients in HK.",
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+        assert events[0]["type"] == "run.created"
+        assert any(event["type"] == "run.updated" for event in events)
+        assert any(
+            "[BackendData]" in trace_line
+            for event in events
+            for trace_line in event["run"].get("execution_trace", [])
+        )
+        assert events[-1]["type"] == "run.completed"
+        assert events[-1]["run"]["report"]["market"] == "HK"

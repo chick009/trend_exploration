@@ -1,7 +1,43 @@
 export type Market = "HK" | "KR" | "TW" | "SG" | "cross";
 export type Category = "skincare" | "haircare" | "makeup" | "supplements" | "all";
-export type SourceName = "rednote" | "google_trends" | "sales" | "tiktok" | "instagram";
+export type SourceName = "google_trends" | "sales" | "tiktok" | "instagram";
 export type AnalysisMode = "single_market" | "cross_market";
+export type InstagramFeedType = "top" | "recent";
+export type RecencySupportStatus = "supported" | "partial" | "unsupported";
+
+export type SourceRecencySupport = {
+  source: SourceName;
+  status: RecencySupportStatus;
+  detail: string;
+};
+
+export type SuggestedKeyword = {
+  keyword: string;
+  rationale?: string | null;
+};
+
+export type KeywordSuggestionRequest = {
+  market: Market;
+  category: Category;
+  recent_days?: number;
+  from_timestamp?: string;
+  to_timestamp?: string;
+  sources: SourceName[];
+  max_target_keywords?: number;
+  tiktok_photo_count_per_keyword?: number | null;
+  instagram_feed_type?: InstagramFeedType;
+};
+
+export type KeywordSuggestionResponse = {
+  market: Market;
+  category: Category;
+  recent_days?: number | null;
+  max_target_keywords: number;
+  sources: SourceName[];
+  suggestions: SuggestedKeyword[];
+  guardrail_flags: string[];
+  recency_support: SourceRecencySupport[];
+};
 
 export type IngestionRunRequest = {
   market: Market;
@@ -10,11 +46,14 @@ export type IngestionRunRequest = {
   from_timestamp?: string;
   to_timestamp?: string;
   sources: SourceName[];
+  target_keywords?: string[];
+  suggested_keywords?: string[];
+  max_target_keywords?: number;
   seed_terms?: string[];
   max_seed_terms?: number;
-  max_notes_per_keyword?: number;
-  max_comment_posts_per_keyword?: number;
-  max_comments_per_post?: number;
+  /** TikTok photo search page size per approved keyword. */
+  tiktok_photo_count_per_keyword?: number | null;
+  instagram_feed_type?: InstagramFeedType;
 };
 
 export type AnalysisRunRequest = {
@@ -61,6 +100,26 @@ export type TrendReport = {
   guardrail_flags: string[];
 };
 
+export type ToolInvocationKind = "sql" | "llm" | "memory";
+export type ToolInvocationStatus = "running" | "success" | "error";
+
+export type ToolInvocation = {
+  id: string;
+  node: string;
+  tool: string;
+  tool_kind: ToolInvocationKind;
+  title: string;
+  status: ToolInvocationStatus;
+  started_at: string;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  input_summary?: string | null;
+  sql?: string | null;
+  output_summary?: string | null;
+  error?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
 export type RunStatusResponse = {
   id: string;
   status: string;
@@ -69,9 +128,18 @@ export type RunStatusResponse = {
   error_message?: string;
   stats: Record<string, unknown>;
   execution_trace: string[];
+  tool_invocations: ToolInvocation[];
   guardrail_flags: string[];
+  target_keywords: string[];
+  suggested_keywords: string[];
+  recency_support: SourceRecencySupport[];
   source_batch_id?: string;
   report?: TrendReport;
+};
+
+export type AnalysisRunStreamEvent = {
+  type: "run.created" | "run.updated" | "run.completed" | "run.failed";
+  run: RunStatusResponse;
 };
 
 export type PaginatedRunsResponse = {

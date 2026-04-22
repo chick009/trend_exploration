@@ -7,6 +7,7 @@ from app.graph import llm as graph_llm
 from app.graph.nodes.lenses import LensDefinition, determine_active_lenses
 from app.graph.schemas import LensCandidateBatch
 from app.graph.state import TrendDiscoveryState
+from app.graph.tools import make_tool_invocation, now_iso
 
 CONFIDENCE_PRIORITY = {"low": 0, "medium": 1, "high": 2}
 
@@ -105,6 +106,7 @@ For each candidate:
 2. `viral_reasoning` must explain why this looks like a trend rather than noise.
 3. `strongest_signal` and `weakest_signal` must reflect the available evidence.
 4. `self_confidence` must be high, medium, or low.
+5. Return JSON with a top-level `candidates` array.
 
 Intent:
 {json.dumps(intent, default=str)}
@@ -112,8 +114,10 @@ Intent:
 Data:
 {json.dumps(data_slice, default=str)}
 """.strip()
-    return graph_llm.get_chat_model(temperature=0.2).with_structured_output(LensCandidateBatch).invoke(
-        [("system", "Return structured trend candidates only."), ("human", prompt)]
+    return graph_llm.invoke_json_response(
+        LensCandidateBatch,
+        system_prompt="Return structured trend candidates as JSON only.",
+        user_prompt=prompt,
     )
 
 
@@ -175,12 +179,53 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
 
     metrics_lookup = _term_metrics_lookup(sql_results)
     merged_candidates: dict[str, dict[str, Any]] = {}
+    tool_invocations: list[dict[str, Any]] = []
 
     for lens in active_lenses:
         data_slice = _build_lens_slice(sql_results, active_region=active_region, lens=lens)
         if not any(data_slice.values()):
             continue
-        lens_batch = _invoke_lens(lens=lens, active_region=active_region, intent=intent, data_slice=data_slice)
+        input_rows = sum(len(rows) for rows in data_slice.values())
+        started_at = now_iso()
+        try:
+            lens_batch = _invoke_lens(lens=lens, active_region=active_region, intent=intent, data_slice=data_slice)
+        except Exception as exc:
+            tool_invocations.append(
+                make_tool_invocation(
+                    node=f"trend_gen_agent:{active_region}",
+                    tool="llm.trend_gen",
+                    tool_kind="llm",
+                    title=f"LLM: generate trend candidates ({lens.name} · {active_region})",
+                    started_at=started_at,
+                    completed_at=now_iso(),
+                    status="error",
+                    input_summary=f"lens={lens.name} market={active_region} input_rows={input_rows}",
+                    error=str(exc),
+                    metadata={"lens": lens.name, "market": active_region},
+                )
+            )
+            raise RuntimeError(
+                f"[TrendGen:{active_region}] lens {lens.name!r} failed: {exc!s}"
+            ) from exc
+        tool_invocations.append(
+            make_tool_invocation(
+                node=f"trend_gen_agent:{active_region}",
+                tool="llm.trend_gen",
+                tool_kind="llm",
+                title=f"LLM: generate trend candidates ({lens.name} · {active_region})",
+                started_at=started_at,
+                completed_at=now_iso(),
+                status="success",
+                input_summary=f"lens={lens.name} market={active_region} input_rows={input_rows}",
+                output_summary=f"{len(lens_batch.candidates)} candidates proposed",
+                metadata={
+                    "lens": lens.name,
+                    "market": active_region,
+                    "candidate_count": len(lens_batch.candidates),
+                    "schema": "LensCandidateBatch",
+                },
+            )
+        )
         for llm_candidate in lens_batch.candidates:
             term = llm_candidate.canonical_term
             metrics = metrics_lookup.get(term)
@@ -199,4 +244,5 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
         "trend_candidates": results,
         "execution_log": [f"[TrendGen:{active_region}] generated {len(results)} candidates across {len(active_lenses)} lenses"],
         "source_batch_ids": sorted({batch for candidate in results for batch in candidate["source_batch_ids"]}),
+        "tool_invocations": tool_invocations,
     }

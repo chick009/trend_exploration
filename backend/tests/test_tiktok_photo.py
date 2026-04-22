@@ -117,6 +117,39 @@ def test_cleaned_posts_to_db_rows() -> None:
     assert "author_json" in rows[0]
 
 
+def test_fetch_search_photo_uses_settings_cookie_and_omits_zero_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = get_settings()
+    settings.tikhub_api_key = "fake-token"
+    settings.tikhub_cookie = "sessionid=abc123"
+
+    captured: dict[str, Any] = {}
+
+    def fake_request_json(
+        self: TikTokPhotoClient,
+        client: Any,
+        path: str,
+        *,
+        params: dict[str, Any],
+        context: str,
+    ) -> dict[str, Any]:
+        captured["path"] = path
+        captured["params"] = params
+        captured["context"] = context
+        return {"data": {"item_list": []}}
+
+    monkeypatch.setattr(TikTokPhotoClient, "_request_json", fake_request_json)
+
+    client = TikTokPhotoClient()
+    client.settings = settings
+    client.fetch_search_photo(keyword="  snail mucin  ", count=5, offset=0)
+
+    assert captured["path"] == "/api/v1/tiktok/web/fetch_search_photo"
+    assert captured["params"]["keyword"] == "snail mucin"
+    assert captured["params"]["offset"] is None
+    assert captured["params"]["cookie"] == "sessionid=abc123"
+    assert captured["context"] == "fetch_search_photo keyword='snail mucin'"
+
+
 def test_pagination_hints_search_id() -> None:
     data = {"extra": {"logid": "L1"}, "log_pb": {"impr_id": "I1"}}
     hints = pagination_hints({}, data)
@@ -229,9 +262,9 @@ def test_ingestion_run_with_tiktok_source(monkeypatch: pytest.MonkeyPatch) -> No
         category="skincare",
         recent_days=7,
         sources=["tiktok"],
-        seed_terms=["alpha"],
-        max_seed_terms=5,
-        max_notes_per_keyword=3,
+        target_keywords=["alpha"],
+        suggested_keywords=["alpha"],
+        max_target_keywords=5,
     )
     svc = IngestionService()
     svc.settings = settings

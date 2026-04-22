@@ -7,6 +7,7 @@ from typing import Any
 from app.graph import llm as graph_llm
 from app.graph.schemas import SynthesizerVerdictBatch
 from app.graph.state import TrendDiscoveryState
+from app.graph.tools import make_tool_invocation, now_iso
 
 
 def normalize_score(value: float, min_value: float, max_value: float) -> float:
@@ -118,12 +119,15 @@ Return one verdict per canonical_term with:
 - concise challenge_notes
 - hype_only true/false
 - seasonal_risk true/false
+- Return JSON with a top-level `verdicts` array.
 
 Candidates:
 {json.dumps(payload, default=str)}
 """.strip()
-    verdict_batch = graph_llm.get_chat_model(temperature=0.0).with_structured_output(SynthesizerVerdictBatch).invoke(
-        [("system", "Return structured skeptical verdicts only."), ("human", prompt)]
+    verdict_batch = graph_llm.invoke_json_response(
+        SynthesizerVerdictBatch,
+        system_prompt="Return structured skeptical verdicts as JSON only.",
+        user_prompt=prompt,
     )
     return {verdict.canonical_term: verdict.model_dump() for verdict in verdict_batch.verdicts}
 
@@ -135,6 +139,7 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
             "synthesized_trends": [],
             "guardrail_flags": ["No candidates available for synthesis."],
             "execution_log": ["[Synthesizer] no candidates found", "[ConfidenceGate] route=end (no high/medium trends)"],
+            "tool_invocations": [],
         }
 
     social_values = [candidate.get("avg_engagement", 0.0) for candidate in raw_candidates]
@@ -219,7 +224,39 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
             }
         )
 
-    verdicts = _invoke_verdicts(synthesized)
+    tool_invocations: list[dict[str, Any]] = []
+    verdict_started_at = now_iso()
+    try:
+        verdicts = _invoke_verdicts(synthesized)
+    except Exception as exc:
+        tool_invocations.append(
+            make_tool_invocation(
+                node="evidence_synthesizer",
+                tool="llm.synthesizer",
+                tool_kind="llm",
+                title="LLM: skeptical verdicts on candidate trends",
+                started_at=verdict_started_at,
+                completed_at=now_iso(),
+                status="error",
+                input_summary=f"candidates={len(synthesized)}",
+                error=str(exc),
+            )
+        )
+        raise RuntimeError(f"[Synthesizer] verdict generation failed: {exc!s}") from exc
+    tool_invocations.append(
+        make_tool_invocation(
+            node="evidence_synthesizer",
+            tool="llm.synthesizer",
+            tool_kind="llm",
+            title="LLM: skeptical verdicts on candidate trends",
+            started_at=verdict_started_at,
+            completed_at=now_iso(),
+            status="success",
+            input_summary=f"candidates={len(synthesized)}",
+            output_summary=f"{len(verdicts)} verdicts returned",
+            metadata={"schema": "SynthesizerVerdictBatch"},
+        )
+    )
     filtered_synthesized = []
     for candidate in synthesized:
         verdict = verdicts.get(candidate["canonical_term"], {})
@@ -258,4 +295,5 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
         "execution_log": [f"[Synthesizer] scored {len(synthesized)} trends", gate],
         "formatted_report": {"regional_divergences": divergences},
         "watch_list_only": watch_list_only,
+        "tool_invocations": tool_invocations,
     }

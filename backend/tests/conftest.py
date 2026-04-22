@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import json
 import re
 
 import pytest
@@ -105,7 +106,83 @@ class FakeStructuredInvoker:
         raise AssertionError(f"Unhandled fake structured schema: {schema_name}")
 
 
+class FakeChatResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
 class FakeChatModel:
+    def invoke(self, payload: object) -> FakeChatResponse:
+        text = _message_text(payload)
+        schema_match = re.search(r"Schema name:\s*(\w+)", text)
+        schema_name = schema_match.group(1) if schema_match else ""
+
+        if schema_name == "QueryIntent":
+            market_match = re.search(r"requested_market:\s*(\w+)", text)
+            requested_market = market_match.group(1) if market_match else "HK"
+            category_match = re.search(r"requested_category:\s*(\w+)", text)
+            requested_category = category_match.group(1) if category_match else "skincare"
+            recency_match = re.search(r"requested_recency_days:\s*(\d+)", text)
+            requested_recency = int(recency_match.group(1)) if recency_match else 14
+            mode_match = re.search(r"requested_analysis_mode:\s*(\w+)", text)
+            analysis_mode = mode_match.group(1) if mode_match else "single_market"
+            markets = ["HK", "KR", "TW", "SG"] if requested_market == "cross" or analysis_mode == "cross_market" else [requested_market]
+            return FakeChatResponse(
+                json.dumps(
+                    {
+                        "markets": markets,
+                        "category": requested_category,
+                        "recency_days": requested_recency,
+                        "entity_types": ["ingredient", "brand", "function"],
+                        "analysis_mode": analysis_mode,
+                        "focus_hint": None,
+                    }
+                )
+            )
+
+        if schema_name == "LensCandidateBatch":
+            terms = _extract_terms(text)[:5] or ["niacinamide", "ceramide", "cica"]
+            return FakeChatResponse(
+                json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "canonical_term": term,
+                                "entity_type": "ingredient",
+                                "lens": "Momentum",
+                                "data_pattern": f"{term} shows multiple reinforcing rows in the provided market slice.",
+                                "viral_reasoning": f"{term} is appearing across more than one signal, which suggests momentum instead of isolated noise.",
+                                "strongest_signal": "social",
+                                "weakest_signal": "sales",
+                                "self_confidence": "medium",
+                            }
+                            for term in terms
+                        ]
+                    }
+                )
+            )
+
+        if schema_name == "SynthesizerVerdictBatch":
+            terms = _extract_terms(text)
+            return FakeChatResponse(
+                json.dumps(
+                    {
+                        "verdicts": [
+                            {
+                                "canonical_term": term,
+                                "status": "confirmed" if index < 3 else "watch",
+                                "challenge_notes": [f"{term} has multi-signal support in the canned test verdict."],
+                                "hype_only": False,
+                                "seasonal_risk": False,
+                            }
+                            for index, term in enumerate(terms)
+                        ]
+                    }
+                )
+            )
+
+        return FakeChatResponse("Ok")
+
     def with_structured_output(self, schema: type) -> FakeStructuredInvoker:
         return FakeStructuredInvoker(schema)
 
@@ -130,7 +207,6 @@ def test_database(tmp_path) -> Iterator[None]:
     apply_migrations()
 
     ingestion_service.settings = settings
-    ingestion_service.rednote_client.settings = settings
     ingestion_service.tiktok_photo_client.settings = settings
     ingestion_service.instagram_client.settings = settings
     ingestion_service.serpapi_client.settings = settings

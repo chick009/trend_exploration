@@ -10,10 +10,10 @@ type Props = {
 };
 
 const sourceHealthLabels: Record<string, string> = {
-  rednote: "RedNote",
   google_trends: "Google Trends",
   sales: "Sales",
   tiktok: "TikTok photos",
+  instagram: "Instagram",
 };
 
 export function ReasoningTrace({ ingestionRun, analysisRun, sourceHealth, guardrailFlags }: Props) {

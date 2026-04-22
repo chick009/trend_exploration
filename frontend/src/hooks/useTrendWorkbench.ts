@@ -1,23 +1,86 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "../api/client";
-import type { AnalysisMode, Category, IngestionRunRequest, Market, SourceName } from "../api/types";
+import type {
+  AnalysisMode,
+  Category,
+  IngestionRunRequest,
+  InstagramFeedType,
+  KeywordSuggestionRequest,
+  KeywordSuggestionResponse,
+  Market,
+  RunStatusResponse,
+  SourceName,
+} from "../api/types";
+
+const KEYWORD_DRIVEN_SOURCES: SourceName[] = ["google_trends", "tiktok", "instagram"];
+
+function normalizeKeywords(input: string) {
+  const seen = new Set<string>();
+  return input
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      const key = item.toLocaleLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 20);
+}
 
 export function useTrendWorkbench() {
+  const queryClient = useQueryClient();
   const [market, setMarket] = useState<Market>("HK");
   const [category, setCategory] = useState<Category>("skincare");
   const [recentDays, setRecentDays] = useState(14);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("single_market");
-  const [sources, setSources] = useState<SourceName[]>(["rednote", "google_trends", "sales"]);
-  const [maxSeedTerms, setMaxSeedTerms] = useState(5);
-  const [maxNotesPerKeyword, setMaxNotesPerKeyword] = useState(5);
-  const [maxCommentPostsPerKeyword, setMaxCommentPostsPerKeyword] = useState(2);
-  const [maxCommentsPerPost, setMaxCommentsPerPost] = useState(5);
+  const [sources, setSources] = useState<SourceName[]>(["google_trends", "sales"]);
+  const [maxTargetKeywords, setMaxTargetKeywords] = useState(5);
+  const [tiktokPhotosPerKeyword, setTiktokPhotosPerKeyword] = useState(5);
+  const [instagramFeedType, setInstagramFeedType] = useState<InstagramFeedType>("top");
+  const [keywordSuggestions, setKeywordSuggestions] = useState<KeywordSuggestionResponse>();
+  const [targetKeywords, setTargetKeywords] = useState<string[]>([]);
+  const [approvedKeywordConfigKey, setApprovedKeywordConfigKey] = useState<string | null>(null);
   const [ingestionRunId, setIngestionRunId] = useState<string>();
   const [analysisRunId, setAnalysisRunId] = useState<string>();
   const [combinedFlowPending, setCombinedFlowPending] = useState(false);
   const [workflowPrompt, setWorkflowPrompt] = useState("");
+  const [analysisStreamRun, setAnalysisStreamRun] = useState<RunStatusResponse>();
+  const [analysisStreamActive, setAnalysisStreamActive] = useState(false);
+  const [analysisStartRunId, setAnalysisStartRunId] = useState<string>();
+  const [analysisStartError, setAnalysisStartError] = useState<string | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
+
+  const requiresKeywords = useMemo(
+    () => sources.some((source) => KEYWORD_DRIVEN_SOURCES.includes(source)),
+    [sources],
+  );
+
+  const suggestionPayload = useMemo<KeywordSuggestionRequest>(
+    () => ({
+      market,
+      category,
+      recent_days: recentDays,
+      sources,
+      max_target_keywords: maxTargetKeywords,
+      tiktok_photo_count_per_keyword: tiktokPhotosPerKeyword,
+      instagram_feed_type: instagramFeedType,
+    }),
+    [category, instagramFeedType, market, maxTargetKeywords, recentDays, sources, tiktokPhotosPerKeyword],
+  );
+
+  const keywordConfigKey = useMemo(
+    () => JSON.stringify(suggestionPayload),
+    [suggestionPayload],
+  );
+
+  const keywordsApproved = !requiresKeywords || (approvedKeywordConfigKey === keywordConfigKey && targetKeywords.length > 0);
+  const keywordApprovalStale = Boolean(requiresKeywords && approvedKeywordConfigKey && approvedKeywordConfigKey !== keywordConfigKey);
 
   const ingestionPayload = useMemo<IngestionRunRequest>(
     () => ({
@@ -25,20 +88,22 @@ export function useTrendWorkbench() {
       category,
       recent_days: recentDays,
       sources,
-      max_seed_terms: maxSeedTerms,
-      max_notes_per_keyword: maxNotesPerKeyword,
-      max_comment_posts_per_keyword: Math.min(maxCommentPostsPerKeyword, maxNotesPerKeyword),
-      max_comments_per_post: maxCommentsPerPost,
+      max_target_keywords: maxTargetKeywords,
+      target_keywords: targetKeywords,
+      suggested_keywords: keywordSuggestions?.suggestions.map((item) => item.keyword) ?? targetKeywords,
+      tiktok_photo_count_per_keyword: tiktokPhotosPerKeyword,
+      instagram_feed_type: instagramFeedType,
     }),
     [
       category,
+      instagramFeedType,
       market,
-      maxCommentPostsPerKeyword,
-      maxCommentsPerPost,
-      maxNotesPerKeyword,
-      maxSeedTerms,
+      maxTargetKeywords,
+      keywordSuggestions?.suggestions,
       recentDays,
       sources,
+      targetKeywords,
+      tiktokPhotosPerKeyword,
     ],
   );
 
@@ -78,8 +143,11 @@ export function useTrendWorkbench() {
   const analysisQuery = useQuery({
     queryKey: ["analysis-run", analysisRunId],
     queryFn: () => api.getAnalysisRun(analysisRunId!),
-    enabled: Boolean(analysisRunId),
+    enabled: Boolean(analysisRunId) && !analysisStreamActive,
     refetchInterval: (query) => {
+      if (analysisStreamActive) {
+        return false;
+      }
       const status = query.state.data?.status;
       return status === "queued" || status === "running" ? 1500 : false;
     },
@@ -92,12 +160,64 @@ export function useTrendWorkbench() {
     },
   });
 
-  const createAnalysisMutation = useMutation({
-    mutationFn: api.createAnalysisRun,
+  const suggestKeywordsMutation = useMutation({
+    mutationFn: api.suggestIngestionKeywords,
     onSuccess: (response) => {
-      setAnalysisRunId(response.id);
+      setKeywordSuggestions(response);
+      setTargetKeywords(response.suggestions.map((item) => item.keyword));
+      setApprovedKeywordConfigKey(null);
     },
   });
+
+  const startAnalysisStream = useCallback(async () => {
+    if (analysisStreamActive) {
+      return;
+    }
+
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    setAnalysisStartError(null);
+    setAnalysisStreamActive(true);
+    setAnalysisStreamRun(undefined);
+
+    let streamedRunId: string | undefined;
+    try {
+      await api.streamAnalysisRun(
+        analysisPayload,
+        (event) => {
+          streamedRunId = event.run.id;
+          setAnalysisRunId(event.run.id);
+          setAnalysisStreamRun(event.run);
+          queryClient.setQueryData(["analysis-run", event.run.id], event.run);
+          if (event.type === "run.created") {
+            setAnalysisStartRunId(event.run.id);
+          }
+        },
+        controller.signal,
+      );
+    } catch (error) {
+      if ((error as Error).name !== "AbortError") {
+        setAnalysisStartError((error as Error).message);
+      }
+    } finally {
+      if (analysisAbortRef.current === controller) {
+        analysisAbortRef.current = null;
+      }
+      setAnalysisStreamActive(false);
+      if (streamedRunId) {
+        void queryClient.invalidateQueries({ queryKey: ["analysis-run", streamedRunId] });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["analysis-runs"] });
+      void queryClient.invalidateQueries({ queryKey: ["latest-trends", market, category] });
+    }
+  }, [analysisPayload, analysisStreamActive, category, market, queryClient]);
+
+  useEffect(() => {
+    return () => {
+      analysisAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (!combinedFlowPending) {
@@ -106,34 +226,51 @@ export function useTrendWorkbench() {
     const status = ingestionQuery.data?.status;
     if (status === "completed") {
       setCombinedFlowPending(false);
-      createAnalysisMutation.mutate(analysisPayload);
+      void startAnalysisStream();
     }
     if (status === "failed") {
       setCombinedFlowPending(false);
     }
-  }, [analysisPayload, combinedFlowPending, createAnalysisMutation, ingestionQuery.data?.status]);
+  }, [combinedFlowPending, ingestionQuery.data?.status, startAnalysisStream]);
 
-  const report = analysisQuery.data?.report ?? latestTrendsQuery.data;
+  const analysisRun =
+    analysisStreamRun && analysisStreamRun.id === analysisRunId ? analysisStreamRun : analysisQuery.data;
+  const savedTrendsReport = latestTrendsQuery.data;
+  const agentReport = analysisRun?.report;
   const guardrailFlags = useMemo(
-    () => analysisQuery.data?.guardrail_flags ?? report?.guardrail_flags ?? [],
-    [analysisQuery.data?.guardrail_flags, report?.guardrail_flags],
+    () => analysisRun?.guardrail_flags ?? savedTrendsReport?.guardrail_flags ?? [],
+    [analysisRun?.guardrail_flags, savedTrendsReport?.guardrail_flags],
   );
 
+  const refreshLatestTrends = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["latest-trends", market, category] });
+  }, [category, market, queryClient]);
+
   const isBusy =
+    suggestKeywordsMutation.isPending ||
     createIngestionMutation.isPending ||
-    createAnalysisMutation.isPending ||
+    analysisStreamActive ||
     ingestionQuery.data?.status === "running" ||
-    analysisQuery.data?.status === "running" ||
+    analysisRun?.status === "queued" ||
+    analysisRun?.status === "running" ||
     combinedFlowPending;
 
   const runErrorMessage =
+    analysisStartError ??
     (ingestionQuery.data?.status === "failed" ? ingestionQuery.data.error_message : null) ??
-    (analysisQuery.data?.status === "failed" ? analysisQuery.data.error_message : null);
+    (analysisRun?.status === "failed" ? analysisRun.error_message : null);
 
   const toggleSource = (source: SourceName) => {
     setSources((current) =>
       current.includes(source) ? current.filter((item) => item !== source) : [...current, source],
     );
+  };
+
+  const keywordText = useMemo(() => targetKeywords.join("\n"), [targetKeywords]);
+
+  const setTargetKeywordText = (value: string) => {
+    setTargetKeywords(normalizeKeywords(value));
+    setApprovedKeywordConfigKey(null);
   };
 
   return {
@@ -143,16 +280,33 @@ export function useTrendWorkbench() {
       recentDays,
       analysisMode,
       sources,
-      maxSeedTerms,
-      maxNotesPerKeyword,
-      maxCommentPostsPerKeyword,
-      maxCommentsPerPost,
+      maxTargetKeywords,
+      tiktokPhotosPerKeyword,
+      instagramFeedType,
       workflowPrompt,
+    },
+    keywordState: {
+      requiresKeywords,
+      keywordSuggestions,
+      keywordText,
+      targetKeywords,
+      keywordsApproved,
+      keywordApprovalStale,
+      recencySupport: keywordSuggestions?.recency_support ?? [],
+      keywordGuardrailFlags: keywordSuggestions?.guardrail_flags ?? [],
     },
     runState: {
       ingestionRunId,
       analysisRunId,
-      report,
+      analysisRun,
+      analysisStartRunId,
+      /** Report from the active or loaded analysis run (LangGraph tab). */
+      agentReport,
+      /** Latest completed report persisted for the current market/category (Trend library tab). */
+      savedTrendsReport,
+      latestTrendsIsError: latestTrendsQuery.isError,
+      latestTrendsIsPending: latestTrendsQuery.isPending,
+      latestTrendsIsFetching: latestTrendsQuery.isFetching,
       guardrailFlags,
       isBusy,
       runErrorMessage,
@@ -164,8 +318,8 @@ export function useTrendWorkbench() {
       analysisQuery,
     },
     mutations: {
+      suggestKeywordsMutation,
       createIngestionMutation,
-      createAnalysisMutation,
     },
     actions: {
       setMarket,
@@ -173,23 +327,36 @@ export function useTrendWorkbench() {
       setRecentDays,
       setAnalysisMode,
       setSources,
-      setMaxSeedTerms: (value: number) => setMaxSeedTerms(Math.min(20, Math.max(1, Number.isFinite(value) ? value : 5))),
-      setMaxNotesPerKeyword: (value: number) => {
-        const nextValue = Math.min(20, Math.max(1, Number.isFinite(value) ? value : 5));
-        setMaxNotesPerKeyword(nextValue);
-        setMaxCommentPostsPerKeyword((current) => Math.min(current, nextValue));
+      setMaxTargetKeywords: (value: number) =>
+        setMaxTargetKeywords(Math.min(20, Math.max(1, Number.isFinite(value) ? value : 5))),
+      setTiktokPhotosPerKeyword: (value: number) =>
+        setTiktokPhotosPerKeyword(Math.min(50, Math.max(1, Number.isFinite(value) ? value : 5))),
+      setInstagramFeedType,
+      requestKeywordSuggestions: () => suggestKeywordsMutation.mutate(suggestionPayload),
+      setTargetKeywordText,
+      approveTargetKeywords: () => {
+        if (!requiresKeywords || targetKeywords.length > 0) {
+          setApprovedKeywordConfigKey(keywordConfigKey);
+        }
       },
-      setMaxCommentPostsPerKeyword: (value: number) =>
-        setMaxCommentPostsPerKeyword(Math.min(maxNotesPerKeyword, Math.max(0, Number.isFinite(value) ? value : 2))),
-      setMaxCommentsPerPost: (value: number) =>
-        setMaxCommentsPerPost(Math.min(20, Math.max(1, Number.isFinite(value) ? value : 5))),
       setWorkflowPrompt,
       toggleSource,
       setIngestionRunId,
       setAnalysisRunId,
-      runExtraction: () => createIngestionMutation.mutate(ingestionPayload),
-      runAnalysis: () => createAnalysisMutation.mutate(analysisPayload),
+      refreshLatestTrends,
+      runExtraction: () => {
+        if (!keywordsApproved) {
+          return;
+        }
+        createIngestionMutation.mutate(ingestionPayload);
+      },
+      runAnalysis: () => {
+        void startAnalysisStream();
+      },
       refreshAndAnalyze: () => {
+        if (!keywordsApproved) {
+          return;
+        }
         setCombinedFlowPending(true);
         createIngestionMutation.mutate(ingestionPayload);
       },

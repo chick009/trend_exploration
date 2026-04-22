@@ -32,6 +32,17 @@ cd backend
 - Copy `backend/.env.example` to `backend/.env` and set keys as needed.  
 - Optional keys control SerpApi, TikHub (REDNOTE), OpenRouter, and `ENABLE_SCHEDULER`.  
 - The app reads `backend/.env` when the working directory is `backend` (see `app/core/config.py`).
+- After changing `backend/.env`, fully restart the backend process. `uvicorn --reload` watches Python files, but `.env` changes alone do not trigger a reload, and settings are cached per process.
+
+### OpenRouter smoke test
+
+If analysis fails and you want to verify the backend can reach OpenRouter at all, run this from `backend/`:
+
+```powershell
+.\.venv\Scripts\python -c "from app.graph.llm import get_chat_model; r=get_chat_model().invoke('Reply with ok'); print(r.content)"
+```
+
+If that works, the API key, base URL, and basic model connectivity are valid for the backend process.
 
 ## 2. Frontend (Vite)
 
@@ -94,7 +105,11 @@ cd backend
 |--------|----------------|
 | `npm` errors about missing `package.json` | Run `npm` commands from `frontend/`, not the repo root. |
 | Uvicorn cannot find the app or `.venv` | Use `backend\.venv` and run uvicorn with `cwd` = `backend`. |
+| `.env` changes seem ignored | Restart the backend process. `.env` edits are not hot-reloaded, and `get_settings()` caches values for the life of the process. |
 | `GET /trends/latest` → 404 | No completed report for that market/category; run analysis first. |
+| `/health` is OK but analysis still fails | `/health` only confirms the API process is running. It does not verify OpenRouter credentials or LangGraph node execution. |
+| `[Analysis] failed: Error code: 401 - {'error': {'message': 'User not found.', 'code': 401}}` | First restart the backend so the current `backend/.env` is actually loaded. If a plain `get_chat_model().invoke(...)` smoke test works but analysis still fails, the issue is in the analysis-specific LangGraph LLM path (currently the structured-output nodes after `MemoryRead`), not general API connectivity. |
+| Plain OpenRouter calls work, but LangGraph analysis fails later | The current graph uses `with_structured_output(...)` in the trend-generation and synthesis nodes. Some OpenRouter/model combinations can pass simple chat calls but still fail on structured-output requests. |
 | CORS issues | Backend allows `*` for origins; ensure `VITE_API_BASE_URL` matches the API URL. |
 | Vite prints “Port 5173 is in use” | Another dev server is still running; Vite may pick `5174` (check the terminal). Stop the old process or pass `--port` explicitly. |
 | `&&` fails in PowerShell | On Windows PowerShell 5.x, chain commands with `;` or run them on separate lines. |

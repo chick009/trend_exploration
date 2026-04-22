@@ -11,6 +11,7 @@ from app.main import app
 from app.services.ingestion.ingestion_service import IngestionService
 from app.services.ingestion.instagram_client import (
     InstagramClient,
+    build_hashtag_keyword_candidates,
     cleaned_posts_to_db_rows,
     extract_instagram_posts,
     normalize_tikhub_data,
@@ -93,6 +94,16 @@ def test_cleaned_posts_to_db_rows_serializes_json() -> None:
     assert row["hashtags_json"] == '["skincare", "fyp"]'
     assert row["mentions_json"] == '["brand", "creator"]'
     assert row["is_video"] == 1
+
+
+def test_build_hashtag_keyword_candidates_normalizes_phrase() -> None:
+    candidates = build_hashtag_keyword_candidates(" #COSRX snail mucin essence ")
+    assert candidates == [
+        "COSRX snail mucin essence",
+        "cosrxsnailmucinessence",
+        "cosrxsnailmucin",
+        "cosrx",
+    ]
 
 
 def test_pagination_hints_has_more() -> None:
@@ -190,6 +201,35 @@ def test_run_instagram_fetch_clean_save_uses_real_pipeline(test_database, monkey
     assert dict(count)["c"] == 1
 
 
+def test_run_instagram_fetch_clean_save_retries_hashtag_variants(
+    test_database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = get_settings()
+    settings.tikhub_api_key = "fake-token"
+    attempted_keywords: list[str] = []
+
+    def fake_fetch(self: InstagramClient, *, keyword: str, feed_type: str = "top") -> dict[str, Any]:
+        attempted_keywords.append(keyword)
+        if keyword == "COSRX snail mucin essence":
+            return {"data": {"data": {"items": []}}}
+        if keyword == "cosrxsnailmucinessence":
+            return {"data": {"data": {"items": [_minimal_item()]}}}
+        raise AssertionError(f"Unexpected fallback keyword: {keyword}")
+
+    monkeypatch.setattr(InstagramClient, "fetch_hashtag_posts", fake_fetch)
+
+    envelope, posts, saved_count = run_instagram_fetch_clean_save(
+        keyword="COSRX snail mucin essence",
+        feed_type="recent",
+        client=InstagramClient(),
+    )
+
+    assert saved_count == 1
+    assert len(posts) == 1
+    assert attempted_keywords == ["COSRX snail mucin essence", "cosrxsnailmucinessence"]
+    assert "data" in envelope
+
+
 @pytest.mark.usefixtures("test_database")
 def test_ingestion_run_with_instagram_source(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.models.schemas import IngestionRunRequest
@@ -207,9 +247,9 @@ def test_ingestion_run_with_instagram_source(monkeypatch: pytest.MonkeyPatch) ->
         category="skincare",
         recent_days=7,
         sources=["instagram"],
-        seed_terms=["cat"],
-        max_seed_terms=5,
-        max_notes_per_keyword=3,
+        target_keywords=["cat"],
+        suggested_keywords=["cat"],
+        max_target_keywords=5,
     )
     service = IngestionService()
     service.settings = settings

@@ -23,6 +23,7 @@ class TrendDiscoveryState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
     guardrail_flags: Annotated[list[str], operator.add]
     execution_log: Annotated[list[str], operator.add]
+    tool_invocations: Annotated[list[dict], operator.add]
     retry_count: int
     watch_list_only: bool
     source_batch_ids: Annotated[list[str], operator.add]

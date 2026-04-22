@@ -1,14 +1,23 @@
 import type { AnalysisMode, Market, RunStatusResponse } from "../api/types";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, StatusPill } from "./ui";
 
-type StepStatus = "pending" | "active" | "complete" | "skipped";
+export type GraphFlowStepStatus = "pending" | "active" | "complete" | "skipped" | "error";
 
 export type GraphWorkflowStep = {
   id: string;
   title: string;
   nodeId: string;
   detail?: string;
-  status: StepStatus;
+  status: GraphFlowStepStatus;
+};
+
+const STATIC_FLOW_DESCRIPTION: Record<string, string> = {
+  intent: "Converts the optional prompt into SQL-aligned filters.",
+  backend_data: "Loads social, search, and sales signals outside LangGraph before agent execution.",
+  trend_gen: "Parallel agents via Send() for the active market (cross-market uses multiple regions).",
+  synth: "Combines source evidence into candidate scores.",
+  gate: "Routes to formatter only when enough confidence is present.",
+  format: "Builds the final report payload for this tab.",
 };
 
 export function buildGraphSteps(
@@ -18,12 +27,9 @@ export function buildGraphSteps(
   market: Market,
 ): GraphWorkflowStep[] {
   const running = runStatus === "running" || runStatus === "queued";
-  const intentLine = trace.find(
-    (line) =>
-      line.includes("[IntentParser]") &&
-      (line.includes("market=") || line.includes("unsupported market") || line.includes("user_query=")),
-  );
+  const intentLine = trace.find((line) => line.includes("[IntentParser]"));
   const queryLine = trace.find((line) => line.includes("[IntentParser] user_query="));
+  const backendDataLine = trace.find((line) => line.includes("[BackendData]"));
   const trendLines = trace.filter((line) => line.includes("[TrendGen:"));
   const synthLine = trace.find((line) => line.includes("[Synthesizer]"));
   const gateLine = trace.find((line) => line.includes("[ConfidenceGate]"));
@@ -36,22 +42,35 @@ export function buildGraphSteps(
       ? "Parallel agents: HK, KR, TW, SG"
       : `Parallel agents via Send() for ${market === "cross" ? "regions" : market}`;
 
-  const trendDetail = trendLines.length ? trendLines.map((line) => line.replaceAll("[", "").replaceAll("]", "")).join(" · ") : regionHint;
+  const trendDetail = trendLines.length
+    ? trendLines.map((line) => line.replaceAll("[", "").replaceAll("]", "")).join(" · ")
+    : regionHint;
 
   return [
     {
       id: "intent",
-      title: "Intent parser",
+      title: "Text-to-SQL planner",
       nodeId: "intent_parser",
-      detail: queryLine ? "Parsed filters and captured the user prompt." : intentLine ? "Built query_params for retrieval." : undefined,
+      detail: queryLine
+        ? "Mapped the prompt into SQL-aligned filters and preserved the original request."
+        : intentLine
+          ? "Prepared the SQL query plan that the backend loader uses before the graph starts."
+          : "Converts the optional prompt into SQL-aligned filters.",
       status: intentLine ? "complete" : running ? "active" : "pending",
+    },
+    {
+      id: "backend_data",
+      title: "Backend signal loading",
+      nodeId: "backend_preload",
+      detail: backendDataLine ?? "Loads social, search, and sales signals outside LangGraph before agent execution.",
+      status: backendDataLine ? "complete" : intentLine && running ? "active" : "pending",
     },
     {
       id: "trend_gen",
       title: "Trend generation",
       nodeId: "trend_gen_agent",
       detail: trendDetail,
-      status: trendLines.length > 0 ? "complete" : intentLine && running ? "active" : "pending",
+      status: trendLines.length > 0 ? "complete" : backendDataLine && running ? "active" : "pending",
     },
     {
       id: "synth",
@@ -77,7 +96,119 @@ export function buildGraphSteps(
   ];
 }
 
-type Props = {
+export function withFailedRunStepError(steps: GraphWorkflowStep[], runStatus: string | undefined): GraphWorkflowStep[] {
+  if (runStatus !== "failed") {
+    return steps;
+  }
+  let lastDone = -1;
+  for (let i = 0; i < steps.length; i += 1) {
+    if (steps[i].status === "complete" || steps[i].status === "skipped") {
+      lastDone = i;
+    }
+  }
+  const errAt = lastDone + 1;
+  return steps.map((step, i) => {
+    if (i === errAt) {
+      return { ...step, status: "error" as const };
+    }
+    if (i > errAt) {
+      return { ...step, status: "pending" as const };
+    }
+    return step;
+  });
+}
+
+type FlowColor = "success" | "error" | "pending";
+
+function flowColorForStatus(status: GraphFlowStepStatus): FlowColor {
+  if (status === "complete" || status === "skipped") {
+    return "success";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  return "pending";
+}
+
+const flowColorClasses: Record<FlowColor, { border: string; label: string; badge: "success" | "danger" | "info" }> = {
+  success: {
+    border: "border-l-emerald-500/80",
+    label: "text-emerald-200/90",
+    badge: "success",
+  },
+  error: {
+    border: "border-l-rose-500/90",
+    label: "text-rose-200/90",
+    badge: "danger",
+  },
+  pending: {
+    border: "border-l-sky-500/85",
+    label: "text-sky-200/90",
+    badge: "info",
+  },
+};
+
+const FLOW_STATUS_LABEL: Record<GraphFlowStepStatus, string> = {
+  complete: "completed",
+  skipped: "skipped",
+  error: "error",
+  pending: "pending",
+  active: "active",
+};
+
+export function GraphFlowStepsSidebar({
+  market,
+  analysisMode,
+  analysisRun,
+}: {
+  market: Market;
+  analysisMode: AnalysisMode;
+  analysisRun?: RunStatusResponse;
+}) {
+  const trace = analysisRun?.execution_trace ?? [];
+  const runStatus = analysisRun?.status;
+  const baseSteps = buildGraphSteps(trace, runStatus, analysisMode, market);
+  const steps = withFailedRunStepError(baseSteps, runStatus);
+
+  return (
+    <Card className="border-white/10">
+      <CardHeader className="space-y-1">
+        <Badge tone="accent">LangGraph</Badge>
+        <CardTitle className="text-base">Logic flow</CardTitle>
+        <CardDescription>Planner → preload → agents → synthesis → gate → report.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {steps.map((item) => {
+          const colorKey = flowColorForStatus(item.status);
+          const cls = flowColorClasses[colorKey];
+          const blurb =
+            item.id === "trend_gen" ? item.detail ?? STATIC_FLOW_DESCRIPTION.trend_gen : STATIC_FLOW_DESCRIPTION[item.id] ?? item.detail;
+          return (
+            <div
+              key={item.id}
+              className={`rounded-2xl border border-white/10 border-l-4 bg-white/[0.04] p-3 pl-4 ${cls.border}`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-slate-100">{item.title}</div>
+                  <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">
+                    {item.nodeId}
+                  </div>
+                </div>
+                <Badge tone={cls.badge} className="shrink-0">
+                  {FLOW_STATUS_LABEL[item.status]}
+                </Badge>
+              </div>
+              {blurb ? <p className={`mt-2 text-xs leading-relaxed ${cls.label}`}>{blurb}</p> : null}
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
+type StreamPanelProps = {
   market: Market;
   analysisMode: AnalysisMode;
   analysisRun?: RunStatusResponse;
@@ -85,6 +216,7 @@ type Props = {
   onWorkflowPromptChange: (value: string) => void;
   onRunAnalysis: () => void;
   isBusy: boolean;
+  runErrorMessage?: string | null;
 };
 
 export function GraphWorkflowPanel({
@@ -95,20 +227,20 @@ export function GraphWorkflowPanel({
   onWorkflowPromptChange,
   onRunAnalysis,
   isBusy,
-}: Props) {
+  runErrorMessage,
+}: StreamPanelProps) {
   const trace = analysisRun?.execution_trace ?? [];
-  const steps = buildGraphSteps(trace, analysisRun?.status, analysisMode, market);
 
   return (
     <Card className="overflow-hidden">
       <CardHeader className="gap-4 border-b border-white/10 pb-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-2">
-            <Badge tone="accent">LangGraph</Badge>
+            <Badge tone="info">Stream</Badge>
             <div className="space-y-1">
-              <CardTitle>Trend discovery graph</CardTitle>
+              <CardTitle>Runtime trace and tool calls</CardTitle>
               <CardDescription>
-                Mirrors <code className="inline-code">build_graph()</code>: START, intent parser, regional parallel trend generation, synthesizer, confidence gate, then formatter or END.
+                Line-delimited log stream as the run progresses; tool invocations are summarized in the next card.
               </CardDescription>
             </div>
           </div>
@@ -116,7 +248,7 @@ export function GraphWorkflowPanel({
           <div className="flex flex-wrap items-center gap-3">
             <StatusPill status={analysisRun?.status ?? "idle"} />
             <Button variant="primary" onClick={onRunAnalysis} disabled={isBusy}>
-              {isBusy ? "Running graph..." : "Run graph"}
+              {isBusy ? "Running…" : "Run graph"}
             </Button>
           </div>
         </div>
@@ -135,28 +267,34 @@ export function GraphWorkflowPanel({
           />
         </label>
 
-        <div className="space-y-3" aria-label="Graph execution progress">
-          {steps.map((item, index) => (
-            <div key={item.id} className="relative pl-7">
-              {index < steps.length - 1 ? <div className="absolute left-[11px] top-10 h-[calc(100%-16px)] w-px bg-white/10" /> : null}
-              <div className="absolute left-0 top-2.5 h-[22px] w-[22px] rounded-full border border-white/10 bg-slate-900/90" />
-              <article className="rounded-3xl border border-white/10 bg-white/3 p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-1">
-                    <div className="text-base font-semibold text-slate-100">{item.title}</div>
-                    <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{item.nodeId}</div>
-                  </div>
-                  <StatusPill status={item.status} />
-                </div>
-                {item.detail ? <p className="mt-3 text-sm leading-6 text-slate-400">{item.detail}</p> : null}
-              </article>
-            </div>
-          ))}
+        {runErrorMessage ? (
+          <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            {runErrorMessage}
+          </div>
+        ) : null}
+
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Streaming log</div>
+          <div className="max-h-[min(520px,60vh)] overflow-y-auto rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+            {trace.length > 0 ? (
+              <ol className="list-decimal space-y-2 pl-4 font-mono text-[11px] leading-relaxed text-slate-300 [word-break:break-word]">
+                {trace.map((line, index) => (
+                  <li key={`${index}-${line.slice(0, 64)}`} className="marker:text-slate-600">
+                    {line}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <div className="px-1 py-10 text-center text-sm text-slate-500">
+                No lines yet. Run the graph to stream execution_trace from the backend.
+              </div>
+            )}
+          </div>
         </div>
 
         {analysisRun?.id ? (
-          <div className="rounded-3xl border border-white/10 bg-white/3 px-4 py-3 text-sm text-slate-400">
-            Active run <code className="inline-code">{analysisRun.id}</code>
+          <div className="rounded-2xl border border-white/10 bg-white/3 px-4 py-3 text-sm text-slate-400">
+            Run <code className="inline-code">{analysisRun.id}</code> · {market} · {analysisMode.replace("_", " ")}
           </div>
         ) : null}
       </CardContent>

@@ -12,6 +12,7 @@ from app.db.repository import (
     json_loads,
 )
 from app.graph.state import TrendDiscoveryState
+from app.graph.tools import make_tool_invocation, now_iso
 
 
 def _build_alias_map(dictionary: dict[str, dict[str, Any]]) -> dict[str, str]:
@@ -198,8 +199,63 @@ def _aggregate_sales(
     return sorted(results, key=lambda item: (item["market"], item["canonical_term"]))
 
 
-def run_sql_dispatcher(state: TrendDiscoveryState) -> TrendDiscoveryState:
-    intent = state["query_intent"]
+def _render_category_clause(column_name: str, category: str) -> str:
+    if category == "all":
+        return ""
+    return f" AND COALESCE({column_name}, 'all') = '{category}'"
+
+
+def _build_sql_preview(
+    *,
+    source: str,
+    markets: list[str],
+    category: str,
+    recency_days: int,
+) -> str:
+    markets_sql = ", ".join(f"'{market}'" for market in markets)
+    recency_sql = f"-{recency_days} days"
+    if source == "social":
+        return (
+            "SELECT COALESCE(llm_entities, entity_mentions, '[]') AS entity_list, "
+            "AVG(engagement_score) AS avg_engagement, AVG(positivity_score) AS avg_positivity_score, "
+            "COUNT(*) AS post_count "
+            "FROM social_posts "
+            f"WHERE region IN ({markets_sql}) AND date(post_date) >= date('now', '{recency_sql}')"
+            f"{_render_category_clause('llm_category', category)} AND relevance_score >= 0.4 "
+            "GROUP BY entity_list"
+        )
+    if source == "search":
+        return (
+            "SELECT keyword, wow_delta, index_value, source_batch_id "
+            "FROM search_trends "
+            f"WHERE geo IN ({markets_sql}) AND date(snapshot_date) >= date('now', '{recency_sql}') "
+            f"AND is_breakout = 1{_render_category_clause('llm_category', category)} "
+            "AND relevance_score >= 0.4 ORDER BY wow_delta DESC"
+        )
+    if source == "sales":
+        return (
+            "SELECT ingredient_tags, brand, category, AVG(wow_velocity) AS avg_velocity, "
+            "SUM(units_sold) AS total_units, SUM(is_restocking) AS restock_count, source_batch_id "
+            "FROM sales_data "
+            f"WHERE region IN ({markets_sql}) AND date(week_start) >= date('now', '{recency_sql}')"
+            f"{_render_category_clause('category', category)} "
+            "GROUP BY brand, ingredient_tags, category, source_batch_id ORDER BY avg_velocity DESC"
+        )
+    return ""
+
+
+_SIGNAL_TITLES = {
+    "social": "SQL: aggregate RedNote social posts",
+    "search": "SQL: aggregate Google Trends breakouts",
+    "sales": "SQL: aggregate sales velocity",
+}
+
+
+def load_sql_results(
+    intent: dict[str, Any],
+    *,
+    seed_source_batch_ids: list[str] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], list[str], tuple[str, ...], list[dict[str, Any]]]:
     markets = list(intent["markets"])
     category = intent["category"]
     recency_days = intent["recency_days"]
@@ -214,48 +270,98 @@ def run_sql_dispatcher(state: TrendDiscoveryState) -> TrendDiscoveryState:
         "sales": [],
     }
 
-    if "social" in query_plan:
-        sql_results["social"] = _aggregate_social(
+    tool_invocations: list[dict[str, Any]] = []
+    aggregators = {
+        "social": _aggregate_social,
+        "search": _aggregate_search,
+        "sales": _aggregate_sales,
+    }
+
+    for source in ("social", "search", "sales"):
+        if source not in query_plan:
+            continue
+        started_at = now_iso()
+        sql_preview = _build_sql_preview(
+            source=source,
             markets=markets,
             category=category,
             recency_days=recency_days,
-            dictionary=dictionary,
-            alias_map=alias_map,
-            allowed_entity_types=allowed_entity_types,
         )
-    if "search" in query_plan:
-        sql_results["search"] = _aggregate_search(
-            markets=markets,
-            category=category,
-            recency_days=recency_days,
-            dictionary=dictionary,
-            alias_map=alias_map,
-            allowed_entity_types=allowed_entity_types,
-        )
-    if "sales" in query_plan:
-        sql_results["sales"] = _aggregate_sales(
-            markets=markets,
-            category=category,
-            recency_days=recency_days,
-            dictionary=dictionary,
-            alias_map=alias_map,
-            allowed_entity_types=allowed_entity_types,
+        try:
+            rows = aggregators[source](
+                markets=markets,
+                category=category,
+                recency_days=recency_days,
+                dictionary=dictionary,
+                alias_map=alias_map,
+                allowed_entity_types=allowed_entity_types,
+            )
+        except Exception as exc:
+            tool_invocations.append(
+                make_tool_invocation(
+                    node="sql_dispatcher",
+                    tool=f"sql.{source}",
+                    tool_kind="sql",
+                    title=_SIGNAL_TITLES[source],
+                    started_at=started_at,
+                    completed_at=now_iso(),
+                    status="error",
+                    input_summary=(
+                        f"markets={markets} category={category} recency_days={recency_days}"
+                    ),
+                    sql=sql_preview,
+                    error=str(exc),
+                )
+            )
+            raise
+        sql_results[source] = rows
+        tool_invocations.append(
+            make_tool_invocation(
+                node="sql_dispatcher",
+                tool=f"sql.{source}",
+                tool_kind="sql",
+                title=_SIGNAL_TITLES[source],
+                started_at=started_at,
+                completed_at=now_iso(),
+                status="success",
+                input_summary=(
+                    f"markets={markets} category={category} recency_days={recency_days}"
+                ),
+                sql=sql_preview,
+                output_summary=f"{len(rows)} aggregated rows",
+                metadata={
+                    "markets": markets,
+                    "category": category,
+                    "recency_days": recency_days,
+                    "row_count": len(rows),
+                },
+            )
         )
 
-    source_batch_ids = set(state.get("source_batch_ids", []))
+    source_batch_ids = set(seed_source_batch_ids or [])
     source_batch_ids.update(get_latest_source_batch_ids())
     for signal_rows in sql_results.values():
         for row in signal_rows:
             source_batch_ids.update(row.get("source_batch_ids", []))
 
+    return sql_results, sorted(source_batch_ids), query_plan, tool_invocations
+
+
+def run_sql_dispatcher(state: TrendDiscoveryState) -> TrendDiscoveryState:
+    sql_results, source_batch_ids, query_plan, tool_invocations = load_sql_results(
+        state["query_intent"],
+        seed_source_batch_ids=list(state.get("source_batch_ids", [])),
+    )
+
     return {
         "sql_results": sql_results,
-        "source_batch_ids": sorted(source_batch_ids),
+        "source_batch_ids": source_batch_ids,
         "execution_log": [
             (
-                "[SQLDispatcher] "
+                "[BackendData] "
                 f"plan={list(query_plan)} social={len(sql_results['social'])} "
                 f"search={len(sql_results['search'])} sales={len(sql_results['sales'])}"
             )
         ],
+        "tool_invocations": tool_invocations,
     }

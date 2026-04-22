@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
-from app.db.repository import get_analysis_run, get_latest_trend_report, json_loads, list_analysis_runs
+from app.db.repository import get_latest_trend_report, list_analysis_runs
 from app.models.schemas import AnalysisRunRequest, PaginatedRunsResponse, RunStatusResponse, TrendReport
-from app.services.analysis_service import AnalysisService
+from app.services.analysis_service import AnalysisService, build_run_status_response
 
 router = APIRouter(tags=["analysis"])
 service = AnalysisService()
@@ -19,40 +21,35 @@ def create_analysis_run(request: AnalysisRunRequest, background_tasks: Backgroun
     return RunStatusResponse(id=run_id, status="queued")
 
 
+@router.post("/analysis_runs/stream")
+def stream_analysis_run(request: AnalysisRunRequest) -> StreamingResponse:
+    run_id = service.create_run(request)
+
+    def iter_stream():
+        created_event = {
+            "type": "run.created",
+            "run": service.get_run_status(run_id).model_dump(mode="json"),
+        }
+        yield json.dumps(created_event) + "\n"
+        for event_type, run_status in service.iter_run_events(run_id, request):
+            yield json.dumps({"type": event_type, "run": run_status.model_dump(mode="json")}) + "\n"
+
+    return StreamingResponse(iter_stream(), media_type="application/x-ndjson")
+
+
 @router.get("/analysis_runs", response_model=PaginatedRunsResponse)
 def get_analysis_runs(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)) -> PaginatedRunsResponse:
     rows, total = list_analysis_runs(limit=limit, offset=offset)
-    items = [
-        RunStatusResponse(
-            id=row["id"],
-            status=row["status"],
-            started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
-            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
-            error_message=row["error_message"],
-            stats={"source_batch_ids": json_loads(row["source_batch_ids"], [])},
-            execution_trace=json_loads(row["execution_trace"], []),
-        )
-        for row in rows
-    ]
+    items = [build_run_status_response(row) for row in rows]
     return PaginatedRunsResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/analysis_runs/{run_id}", response_model=RunStatusResponse)
 def get_analysis_status(run_id: str) -> RunStatusResponse:
-    row = get_analysis_run(run_id)
-    if not row:
+    try:
+        return service.get_run_status(run_id)
+    except LookupError:
         raise HTTPException(status_code=404, detail="Analysis run not found")
-    report_payload = json_loads(row["report_json"], None) if row["report_json"] else None
-    return RunStatusResponse(
-        id=row["id"],
-        status=row["status"],
-        started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
-        completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
-        error_message=row["error_message"],
-        execution_trace=json_loads(row["execution_trace"], []),
-        stats={"source_batch_ids": json_loads(row["source_batch_ids"], [])},
-        report=TrendReport.model_validate(report_payload) if report_payload else None,
-    )
 
 
 @router.get("/trends/latest", response_model=TrendReport)

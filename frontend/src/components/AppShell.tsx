@@ -53,21 +53,20 @@ export function AppShell() {
   }, [pushToast, workbench.mutations.createIngestionMutation.data]);
 
   useEffect(() => {
-    const runId = workbench.mutations.createAnalysisMutation.data?.id;
+    const runId = workbench.runState.analysisStartRunId;
     if (runId && lastAnalysisToastRef.current !== runId) {
       lastAnalysisToastRef.current = runId;
       pushToast({
         tone: "success",
         title: "LangGraph run started",
-        description: `Analysis run ${runId} has been queued.`,
+        description: `Analysis run ${runId} is streaming live from the backend.`,
       });
     }
-  }, [pushToast, workbench.mutations.createAnalysisMutation.data]);
+  }, [pushToast, workbench.runState.analysisStartRunId]);
 
   useEffect(() => {
     const errorMessage =
       (workbench.mutations.createIngestionMutation.error as Error | null)?.message ??
-      (workbench.mutations.createAnalysisMutation.error as Error | null)?.message ??
       workbench.runState.runErrorMessage ??
       null;
     if (errorMessage && lastErrorToastRef.current !== errorMessage) {
@@ -80,7 +79,6 @@ export function AppShell() {
     }
   }, [
     pushToast,
-    workbench.mutations.createAnalysisMutation.error,
     workbench.mutations.createIngestionMutation.error,
     workbench.runState.runErrorMessage,
   ]);
@@ -88,32 +86,35 @@ export function AppShell() {
   const sourceHealth = workbench.queries.sourceHealthQuery.data?.sources ?? [];
   const tabLabels = useMemo(
     () => [
-      { value: "trends" as const, label: "Trends" },
-      { value: "extraction" as const, label: "Data Extraction" },
-      { value: "sql" as const, label: "SQL Database" },
-      { value: "agent" as const, label: "LangGraph Agent" },
+      { value: "trends" as const, label: "Trends", hint: "Saved reports from the database—filter and browse." },
+      { value: "extraction" as const, label: "Data Extraction", hint: "Ingest signals and approve keywords before analysis." },
+      { value: "sql" as const, label: "SQL Database", hint: "Inspect raw rows in the local warehouse." },
+      { value: "agent" as const, label: "LangGraph Agent", hint: "Stream a multi-step run with tools and traces." },
     ],
     [],
   );
 
   return (
     <div className="min-h-screen">
-      <div className="mx-auto flex max-w-[1680px] flex-col gap-6 px-4 py-4 md:px-6 md:py-6">
+      <div className="mx-auto flex max-w-[1680px] flex-col gap-4 px-3 py-3 md:px-5 md:py-4">
         <AppHeader
           sourceHealth={sourceHealth}
           ingestionStatus={workbench.queries.ingestionQuery.data?.status}
-          analysisStatus={workbench.queries.analysisQuery.data?.status}
+          analysisStatus={workbench.runState.analysisRun?.status}
         />
 
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabValue)} className="space-y-6">
-          <div className="sticky top-4 z-20">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabValue)} className="space-y-4">
+          <div className="sticky top-3 z-20 space-y-1.5">
             <TabsList className="backdrop-blur-xl">
               {tabLabels.map((tab) => (
-                <TabsTrigger key={tab.value} value={tab.value}>
+                <TabsTrigger key={tab.value} value={tab.value} title={tab.hint}>
                   {tab.label}
                 </TabsTrigger>
               ))}
             </TabsList>
+            <p className="hidden px-1 text-[11px] text-slate-500 md:block">
+              {tabLabels.find((t) => t.value === activeTab)?.hint}
+            </p>
           </div>
 
           <TabsContent value="trends">

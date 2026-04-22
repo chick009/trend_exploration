@@ -1,6 +1,6 @@
 import type { SourceHealth } from "../api/types";
 import { formatDateTime, formatNumber } from "../lib/utils";
-import { Badge, Card, StatusPill } from "./ui";
+import { Card, StatusPill } from "./ui";
 
 type Props = {
   sourceHealth: SourceHealth[];
@@ -16,42 +16,38 @@ export function AppHeader({ sourceHealth, ingestionStatus, analysisStatus }: Pro
     .sort()
     .at(-1);
 
+  const blurb =
+    "Health and beauty trend intelligence with extraction visibility, database transparency, and LangGraph demos. " +
+    "Read saved trend reports in the Trends tab, manage ingestion in Data Extraction, browse SQLite in SQL Database, and generate fresh reports with a streaming LangGraph agent—all in one workspace.";
+
   return (
-    <Card className="overflow-hidden">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <div className="space-y-4">
-          <Badge tone="accent">Trend exploration workspace</Badge>
-          <div className="space-y-3">
-            <h1 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-50 md:text-4xl">
-              Health and beauty trend intelligence with extraction visibility, database transparency, and LangGraph demos.
-            </h1>
-            <p className="max-w-3xl text-sm leading-7 text-slate-400 md:text-base">
-              Review the confirmed trends, inspect extraction batches with sample rows and error states, browse the SQLite warehouse,
-              and demo the LangGraph backend in a single professional workspace.
-            </p>
-          </div>
+    <Card className="overflow-hidden p-2 md:p-2.5">
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="min-w-0 sm:max-w-[55%]">
+          <h1 className="truncate text-xs font-semibold tracking-tight text-slate-100 md:text-sm">Trend exploration</h1>
+          <p className="truncate text-[10px] leading-snug text-slate-500 md:text-[11px]" title={blurb}>
+            Trends · Extraction · SQL · LangGraph
+          </p>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-1">
-          <div className="rounded-[24px] border border-white/10 bg-white/4 p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pipeline</div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <StatusPill status={ingestionStatus ?? "idle"} />
-              <StatusPill status={analysisStatus ?? "idle"} />
-            </div>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:shrink-0 sm:justify-end">
+          <div className="flex items-center gap-1.5">
+            <span className="hidden text-[10px] uppercase tracking-wide text-slate-500 sm:inline">Pipeline</span>
+            <StatusPill status={ingestionStatus ?? "idle"} />
+            <StatusPill status={analysisStatus ?? "idle"} />
           </div>
-
-          <div className="rounded-[24px] border border-white/10 bg-white/4 p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Indexed rows</div>
-            <div className="mt-3 text-2xl font-semibold text-slate-50">{formatNumber(totalRows)}</div>
-            <div className="mt-1 text-sm text-slate-400">{sourceHealth.length} tracked sources</div>
-          </div>
-
-          <div className="rounded-[24px] border border-white/10 bg-white/4 p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Latest refresh</div>
-            <div className="mt-3 text-sm font-medium text-slate-200">{formatDateTime(latestRefresh)}</div>
-            <div className="mt-1 text-sm text-slate-400">Aggregated from source health checks.</div>
-          </div>
+          <span className="hidden h-3 w-px bg-white/15 sm:inline" aria-hidden />
+          <span className="text-[10px] text-slate-400 md:text-[11px]">
+            <span className="text-slate-500">Rows </span>
+            <span className="font-medium text-slate-200">{formatNumber(totalRows)}</span>
+            <span className="text-slate-600"> · </span>
+            <span className="text-slate-500">{sourceHealth.length} src</span>
+          </span>
+          <span className="hidden h-3 w-px bg-white/15 sm:inline" aria-hidden />
+          <span className="text-[10px] text-slate-400 md:text-[11px]" title="Latest completed ingestion per source health">
+            <span className="text-slate-500">Refresh </span>
+            <span className="font-medium text-slate-300">{formatDateTime(latestRefresh)}</span>
+          </span>
         </div>
       </div>
     </Card>

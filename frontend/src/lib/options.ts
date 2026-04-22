@@ -2,11 +2,10 @@ import type { AnalysisMode, Category, Market, SourceName } from "../api/types";
 
 export const markets: Market[] = ["HK", "KR", "TW", "SG", "cross"];
 export const categories: Category[] = ["skincare", "haircare", "makeup", "supplements", "all"];
-export const sourceOptions: SourceName[] = ["rednote", "google_trends", "sales", "tiktok", "instagram"];
+export const sourceOptions: SourceName[] = ["google_trends", "sales", "tiktok", "instagram"];
 export const analysisModes: AnalysisMode[] = ["single_market", "cross_market"];
 
 export const sourceLabels: Record<SourceName, string> = {
-  rednote: "RedNote",
   google_trends: "Google Trends",
   sales: "Sales seed",
   tiktok: "TikTok photos (TikHub)",

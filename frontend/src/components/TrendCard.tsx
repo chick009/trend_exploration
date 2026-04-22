@@ -12,41 +12,41 @@ export function TrendCard({ trend }: Props) {
   const viralityScore = Math.max(0, Math.min(100, Math.round(trend.virality_score * 100)));
 
   return (
-    <Card className="space-y-4 rounded-[26px] bg-slate-950/45">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
+    <Card className="space-y-3 rounded-2xl bg-slate-950/45">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Badge tone="info">#{trend.rank}</Badge>
             <Badge tone={trend.watch_flag ? "warning" : "success"}>{trend.confidence_tier}</Badge>
             <Badge tone="neutral">{trend.entity_type}</Badge>
             <Badge tone="accent">{trend.trend_stage}</Badge>
           </div>
-          <div className="space-y-1">
-            <h3 className="text-xl font-semibold text-slate-50">{trend.term}</h3>
-            <p className="text-sm leading-6 text-slate-400">{trend.headline}</p>
+          <div className="space-y-0.5">
+            <h3 className="text-lg font-semibold text-slate-50">{trend.term}</h3>
+            <p className="text-xs leading-relaxed text-slate-400">{trend.headline}</p>
           </div>
         </div>
 
-        <div className="min-w-[120px] rounded-3xl border border-white/10 bg-white/3 px-4 py-3 text-right">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Virality</div>
-          <div className="text-3xl font-semibold text-slate-50">{viralityScore}</div>
+        <div className="min-w-[100px] rounded-xl border border-white/10 bg-white/3 px-3 py-2 text-right">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Virality</div>
+          <div className="text-2xl font-semibold text-slate-50">{viralityScore}</div>
           {typeof trend.positivity_score === "number" ? (
-            <div className="text-xs text-slate-400">Positivity {Math.round(trend.positivity_score * 100)}</div>
+            <div className="text-[11px] text-slate-400">Positivity {Math.round(trend.positivity_score * 100)}</div>
           ) : null}
         </div>
       </div>
 
-      <div className="space-y-2">
-        <div className="h-2.5 overflow-hidden rounded-full bg-white/8">
+      <div className="space-y-1.5">
+        <div className="h-2 overflow-hidden rounded-full bg-white/8">
           <div
             className="h-full rounded-full bg-gradient-to-r from-emerald-400 via-sky-400 to-violet-400"
             style={{ width: `${viralityScore}%` }}
           />
         </div>
-        <p className="text-sm leading-6 text-slate-300">{trend.why_viral}</p>
+        <p className="text-xs leading-relaxed text-slate-300">{trend.why_viral}</p>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-1.5">
         {trend.signal_chips.map((chip) => (
           <Badge key={chip} tone="info" className="normal-case tracking-normal text-[12px]">
             {chip}
