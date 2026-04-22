@@ -7,7 +7,7 @@ import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Data
 import { formatDateTime, formatNumber } from "../../lib/utils";
 
 /** Tables surfaced in the UI (fixed order). Backend may omit tables that do not exist yet. */
-const WAREHOUSE_TABLE_ORDER = ["sales_data", "tiktok_photo_posts", "instagram_posts"] as const;
+const WAREHOUSE_TABLE_ORDER = ["sales_data", "tiktok_photo_posts", "instagram_posts", "trend_exploration"] as const;
 
 const PREVIEW_ROW_LIMIT = 5;
 const FULL_PAGE_ROW_LIMIT = 100;
@@ -16,6 +16,17 @@ const SORTABLE_COLUMNS: Record<string, string[]> = {
   sales_data: ["sku", "brand", "category", "region", "week_start", "units_sold", "revenue", "wow_velocity"],
   tiktok_photo_posts: ["id", "search_keyword", "create_time", "create_time_unix", "is_ad", "fetched_at", "source_batch_id"],
   instagram_posts: ["post_id", "search_keyword", "code", "username", "likes", "comments", "views", "created_at", "fetched_at", "source_batch_id"],
+  trend_exploration: [
+    "trend_id",
+    "canonical_term",
+    "entity_type",
+    "hb_category",
+    "virality_score",
+    "confidence_tier",
+    "market",
+    "analysis_date",
+    "status",
+  ],
 };
 
 function looksLikeJson(value: unknown) {
@@ -112,7 +123,10 @@ export function SqlDatabaseTab() {
       <Card className="h-fit xl:sticky xl:top-28">
         <CardHeader>
           <CardTitle>Warehouse tables</CardTitle>
-          <CardDescription>Sales, TikTok photo posts, and Instagram posts stored in SQLite.</CardDescription>
+          <CardDescription>
+            Sales, social ingest tables, and persisted{" "}
+            <code className="inline-code">trend_exploration</code> rows (per-run trend snapshots).
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {!tablesQuery.isLoading && warehouseTables.length === 0 ? (
@@ -133,7 +147,7 @@ export function SqlDatabaseTab() {
                 "w-full rounded-3xl border p-4 text-left transition",
                 selectedTable === table.name
                   ? "border-blue-400/30 bg-blue-500/12"
-                  : "border-white/10 bg-white/3 hover:bg-white/6",
+                  : "border-white/10 bg-white/3 text-slate-200 hover:bg-slate-800/60 hover:text-slate-100",
               ].join(" ")}
             >
               <div className="text-sm font-semibold text-slate-100">{table.name}</div>
@@ -200,7 +214,14 @@ export function SqlDatabaseTab() {
               <DataTable
                 loading={rowsQuery.isLoading}
                 rows={rowsQuery.data?.rows ?? []}
-                rowKey={(row, index) => String(row.id ?? row.post_id ?? `${selectedTable}-${index}`)}
+                rowKey={(row, index) =>
+                  String(
+                    (row as Record<string, unknown>).trend_id ??
+                      (row as Record<string, unknown>).id ??
+                      (row as Record<string, unknown>).post_id ??
+                      `${selectedTable}-${index}`,
+                  )
+                }
                 columns={tableColumns}
                 emptyState={
                   <div className="rounded-3xl border border-dashed border-white/10 px-6 py-12 text-center text-sm text-slate-500">

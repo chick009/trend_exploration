@@ -16,7 +16,7 @@ const variantClasses: Record<ButtonVariant, string> = {
     "border-transparent bg-gradient-to-r from-blue-600 to-violet-500 text-white shadow-lg shadow-blue-950/30 hover:from-blue-500 hover:to-violet-400",
   secondary:
     "border-white/10 bg-slate-800/75 text-slate-100 hover:border-white/20 hover:bg-slate-700/80",
-  ghost: "border-transparent bg-transparent text-slate-200 hover:bg-white/5",
+  ghost: "border-transparent bg-transparent text-slate-200 hover:bg-slate-800/70 hover:text-slate-100",
   danger: "border-red-400/25 bg-red-500/12 text-red-100 hover:bg-red-500/18",
 };
 

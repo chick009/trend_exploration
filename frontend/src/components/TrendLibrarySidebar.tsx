@@ -39,7 +39,7 @@ function SegmentButton({
         "rounded-xl border px-2.5 py-1.5 text-xs transition md:text-sm",
         active
           ? "border-transparent bg-gradient-to-r from-blue-600 to-violet-500 text-white shadow-lg shadow-blue-950/25"
-          : "border-white/10 bg-white/3 text-slate-300 hover:bg-white/6",
+          : "border-white/10 bg-white/3 text-slate-200 hover:bg-slate-800/60 hover:text-slate-100",
       ].join(" ")}
     >
       {children}
@@ -155,7 +155,7 @@ export function TrendLibrarySidebar({
                   "w-full rounded-2xl border px-3 py-2.5 text-left text-xs transition",
                   selectedRunId === row.id
                     ? "border-blue-400/50 bg-blue-950/30"
-                    : "border-white/10 bg-white/3 hover:bg-white/6",
+                    : "border-white/10 bg-white/3 text-slate-200 hover:bg-slate-800/60 hover:text-slate-100",
                 ].join(" ")}
               >
                 <div className="flex items-center justify-between gap-2">

@@ -27,7 +27,7 @@ export function DialogContent({
       >
         {children}
         {showClose ? (
-          <DialogPrimitive.Close className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-300 transition hover:bg-white/10">
+          <DialogPrimitive.Close className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-slate-200 transition hover:bg-slate-800 hover:text-slate-50">
             <X className="h-4 w-4" />
           </DialogPrimitive.Close>
         ) : null}

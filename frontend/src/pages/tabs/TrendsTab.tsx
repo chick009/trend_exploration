@@ -5,8 +5,9 @@ import { api } from "../../api/client";
 import type { TrendCard as TrendCardModel } from "../../api/types";
 import { ReasoningTrace } from "../../components/ReasoningTrace";
 import { TrendCard } from "../../components/TrendCard";
+import { TrendReportTables } from "../../components/TrendReportTables";
 import { TrendLibrarySidebar } from "../../components/TrendLibrarySidebar";
-import { Badge, Card } from "../../components/ui";
+import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../components/ui";
 import type { TrendWorkbench } from "../../hooks/useTrendWorkbench";
 
 type Props = {
@@ -220,6 +221,22 @@ export function TrendsTab({ workbench }: Props) {
                 </label>
               ) : null}
             </div>
+
+            {shownTrends.length > 0 || shownWatch.length > 0 || (displayReport.regional_divergences?.length ?? 0) > 0 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Data tables</CardTitle>
+                  <CardDescription>Same report as the cards—compact rows you can scan and copy.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <TrendReportTables
+                    confirmed={shownTrends}
+                    watch={shownWatch}
+                    regionalDivergences={displayReport.regional_divergences ?? []}
+                  />
+                </CardContent>
+              </Card>
+            ) : null}
 
             {sectionFilter !== "watch" ? (
               <section className="space-y-3">

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { AnalysisMode, Category, InstagramFeedType, Market, SourceName } from "../api/types";
-import { analysisModes, categories, markets, sourceLabels, sourceOptions } from "../lib/options";
+import { analysisModes, categories, markets, extractionSourceOptions, sourceLabels } from "../lib/options";
 import { Badge, Button, Card } from "./ui";
 
 type Props = {
@@ -47,7 +47,7 @@ function SegmentButton({
         "rounded-xl border px-2.5 py-1.5 text-xs transition md:text-sm",
         active
           ? "border-transparent bg-gradient-to-r from-blue-600 to-violet-500 text-white shadow-lg shadow-blue-950/25"
-          : "border-white/10 bg-white/3 text-slate-300 hover:bg-white/6",
+          : "border-white/10 bg-white/3 text-slate-200 hover:bg-slate-800/60 hover:text-slate-100",
       ].join(" ")}
     >
       {children}
@@ -135,16 +135,19 @@ export function FilterSidebar({
         </select>
       </section>
 
-      <section className="space-y-2">
-        <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Recency window</div>
-        <div className="flex flex-wrap gap-2">
-          {[7, 14, 30].map((days) => (
-            <SegmentButton key={days} active={recentDays === days} onClick={() => onRecentDaysChange(days)}>
-              {days}d
-            </SegmentButton>
-          ))}
-        </div>
-      </section>
+      {sources.includes("google_trends") ? (
+        <section className="space-y-2">
+          <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Google Trends recency</div>
+          <p className="text-[11px] leading-relaxed text-slate-500">Only Google Trends queries use this day window via SerpAPI.</p>
+          <div className="flex flex-wrap gap-2">
+            {[7, 14, 30].map((days) => (
+              <SegmentButton key={days} active={recentDays === days} onClick={() => onRecentDaysChange(days)}>
+                {days}d
+              </SegmentButton>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="space-y-2">
         <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Analysis mode</div>
@@ -160,7 +163,7 @@ export function FilterSidebar({
       <section className="space-y-2">
         <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">Sources</div>
         <div className="space-y-1.5">
-          {sourceOptions.map((source) => (
+          {extractionSourceOptions.map((source) => (
             <label
               key={source}
               className="flex items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/3 px-2.5 py-2"
@@ -168,7 +171,11 @@ export function FilterSidebar({
               <div className="space-y-0.5">
                 <div className="text-xs font-medium text-slate-100">{sourceLabels[source]}</div>
                 <div className="text-[11px] leading-snug text-slate-500">
-                  {source === "tiktok" ? "Stored in SQLite from TikHub photo search." : "Included in extraction batches."}
+                  {source === "google_trends"
+                    ? "Keyword time range follows the recency control when enabled above."
+                    : source === "tiktok"
+                      ? "TikHub photo search; stored in SQLite."
+                      : "TikHub hashtag posts; stored in SQLite."}
                 </div>
               </div>
               <input
@@ -212,12 +219,6 @@ export function FilterSidebar({
               <option value="recent">Recent posts</option>
             </select>
           </label>
-        </section>
-      ) : null}
-
-      {sources.includes("sales") ? (
-        <section className="rounded-xl border border-white/8 bg-white/2 px-2.5 py-2 text-[11px] leading-relaxed text-slate-500">
-          <span className="font-medium text-slate-400">Sales</span> refreshes the local seed table; no extra ingestion parameters.
         </section>
       ) : null}
 

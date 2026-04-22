@@ -2,6 +2,10 @@ import type { AnalysisMode, Category, Market, SourceName } from "../api/types";
 
 export const markets: Market[] = ["HK", "KR", "TW", "SG", "cross"];
 export const categories: Category[] = ["skincare", "haircare", "makeup", "supplements", "all"];
+/** Sources available for extraction batches (no sales seed). */
+export const extractionSourceOptions: SourceName[] = ["google_trends", "tiktok", "instagram"];
+
+/** Full list including legacy or non-extraction sources (labels, logs). */
 export const sourceOptions: SourceName[] = ["google_trends", "sales", "tiktok", "instagram"];
 export const analysisModes: AnalysisMode[] = ["single_market", "cross_market"];
 

@@ -39,7 +39,7 @@ export function useTrendWorkbench() {
   const [category, setCategory] = useState<Category>("skincare");
   const [recentDays, setRecentDays] = useState(14);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("single_market");
-  const [sources, setSources] = useState<SourceName[]>(["google_trends", "sales"]);
+  const [sources, setSources] = useState<SourceName[]>(["google_trends", "tiktok", "instagram"]);
   const [maxTargetKeywords, setMaxTargetKeywords] = useState(5);
   const [tiktokPhotosPerKeyword, setTiktokPhotosPerKeyword] = useState(5);
   const [instagramFeedType, setInstagramFeedType] = useState<InstagramFeedType>("top");
@@ -299,6 +299,8 @@ export function useTrendWorkbench() {
       ingestionRunId,
       analysisRunId,
       analysisRun,
+      /** True while the POST /analysis_runs/stream body is being read. */
+      analysisStreamActive,
       analysisStartRunId,
       /** Report from the active or loaded analysis run (LangGraph tab). */
       agentReport,

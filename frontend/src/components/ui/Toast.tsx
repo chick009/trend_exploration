@@ -80,7 +80,7 @@ export function ToastProvider({ children }: PropsWithChildren) {
                   </ToastPrimitive.Description>
                 ) : null}
               </div>
-              <ToastPrimitive.Close className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-400 transition hover:bg-white/10">
+              <ToastPrimitive.Close className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-slate-300 transition hover:bg-slate-800 hover:text-slate-100">
                 <X className="h-4 w-4" />
               </ToastPrimitive.Close>
             </div>

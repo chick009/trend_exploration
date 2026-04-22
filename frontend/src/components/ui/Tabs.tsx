@@ -20,7 +20,7 @@ export function TabsTrigger({ className, ...props }: TabsPrimitive.TabsTriggerPr
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        "inline-flex min-h-8 items-center justify-center rounded-lg px-3 text-xs font-medium text-slate-400 transition data-[state=active]:bg-white data-[state=active]:text-slate-950 data-[state=active]:shadow data-[state=inactive]:hover:bg-white/6 data-[state=inactive]:hover:text-slate-100 md:min-h-9 md:px-3.5 md:text-sm",
+        "inline-flex min-h-8 items-center justify-center rounded-lg px-3 text-xs font-medium text-slate-400 transition data-[state=active]:bg-white data-[state=active]:text-slate-950 data-[state=active]:shadow data-[state=inactive]:hover:bg-slate-800/85 data-[state=inactive]:hover:text-slate-100 md:min-h-9 md:px-3.5 md:text-sm",
         className,
       )}
       {...props}

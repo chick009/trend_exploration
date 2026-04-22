@@ -1,24 +1,39 @@
-import { useQuery } from "@tanstack/react-query";
-
-import { api } from "../../api/client";
 import { GraphFlowStepsSidebar, GraphWorkflowPanel } from "../../components/GraphWorkflowPanel";
 import { ToolInvocationTimeline } from "../../components/ToolInvocationTimeline";
 import { TrendCard } from "../../components/TrendCard";
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, DataTable, StatusPill } from "../../components/ui";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, StatusPill } from "../../components/ui";
 import type { TrendWorkbench } from "../../hooks/useTrendWorkbench";
-import { formatDateTime } from "../../lib/utils";
 
 type Props = {
   workbench: TrendWorkbench;
 };
 
+function CurrentAgentStatusLine({ workbench }: { workbench: TrendWorkbench }) {
+  const { runState } = workbench;
+  const { analysisRun, runErrorMessage, analysisStreamActive } = runState;
+  const streamBusy = analysisStreamActive;
+
+  if (streamBusy || analysisRun?.status === "running" || analysisRun?.status === "queued") {
+    return <p className="text-sm text-slate-300">Loading…</p>;
+  }
+  if (runErrorMessage) {
+    return <p className="text-sm font-medium text-rose-200/90">Error: {runErrorMessage}</p>;
+  }
+  if (analysisRun?.status === "completed") {
+    return <p className="text-sm font-medium text-emerald-200/90">Success</p>;
+  }
+  if (analysisRun?.status === "failed") {
+    return (
+      <p className="text-sm font-medium text-rose-200/90">
+        Error{analysisRun.error_message ? `: ${analysisRun.error_message}` : ""}
+      </p>
+    );
+  }
+  return <p className="text-sm text-slate-500">Idle. Run the graph to see status, or open Execution log for run history.</p>;
+}
+
 export function LangGraphAgentTab({ workbench }: Props) {
   const { filters, actions, runState } = workbench;
-  const recentRunsQuery = useQuery({
-    queryKey: ["analysis-runs", runState.analysisRunId],
-    queryFn: () => api.listAnalysisRuns(20, 0),
-    refetchInterval: 4000,
-  });
 
   const report = runState.agentReport;
   const toolInvocations = runState.analysisRun?.tool_invocations ?? [];
@@ -46,6 +61,22 @@ export function LangGraphAgentTab({ workbench }: Props) {
             </div>
           </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Current agent run</CardTitle>
+            <CardDescription>Loading, success, or error for the active workbench run only.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <CurrentAgentStatusLine workbench={workbench} />
+            <a
+              href="#execution_log"
+              className="inline-block text-sm text-blue-200/95 underline decoration-blue-200/30 underline-offset-2 hover:decoration-blue-200/80"
+            >
+              Open execution log for run history, traces, and tools
+            </a>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid min-w-0 gap-6">
@@ -63,66 +94,6 @@ export function LangGraphAgentTab({ workbench }: Props) {
           />
 
           <ToolInvocationTimeline invocations={toolInvocations} runStatus={runState.analysisRun?.status} />
-        </section>
-
-        <section className="space-y-3">
-          <div className="eyebrow">History</div>
-          <Card>
-            <CardHeader>
-              <CardTitle>Recent agent runs</CardTitle>
-              <CardDescription>Open a run to load its stream, tool calls, and report below.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <DataTable
-                loading={recentRunsQuery.isLoading}
-                rows={recentRunsQuery.data?.items ?? []}
-                rowKey={(row) => row.id}
-                columns={[
-                  {
-                    key: "status",
-                    label: "Status",
-                    render: (row) => <StatusPill status={row.status} />,
-                  },
-                  {
-                    key: "started_at",
-                    label: "Started",
-                    render: (row) => formatDateTime(row.started_at),
-                  },
-                  {
-                    key: "trace",
-                    label: "Trace lines",
-                    align: "right",
-                    render: (row) => row.execution_trace.length,
-                  },
-                  {
-                    key: "tools",
-                    label: "Tool calls",
-                    align: "right",
-                    render: (row) => (row.tool_invocations ?? []).length,
-                  },
-                  {
-                    key: "open",
-                    label: "",
-                    align: "right",
-                    render: (row) => (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-blue-200"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          actions.setAnalysisRunId(row.id);
-                        }}
-                      >
-                        Load
-                      </Button>
-                    ),
-                  },
-                ]}
-                onRowClick={(row) => actions.setAnalysisRunId(row.id)}
-              />
-            </CardContent>
-          </Card>
         </section>
 
         <section className="space-y-3">
@@ -150,7 +121,7 @@ export function LangGraphAgentTab({ workbench }: Props) {
                 </>
               ) : (
                 <div className="rounded-3xl border border-dashed border-white/10 px-4 py-10 text-sm text-slate-500">
-                  No report for this run yet. Run the graph or load a completed analysis from history.
+                  No report for this run yet. Run the graph or load a run from Execution log.
                 </div>
               )}
             </CardContent>

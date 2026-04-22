@@ -4,11 +4,12 @@ import { useTrendWorkbench } from "../hooks/useTrendWorkbench";
 import { AppHeader } from "./AppHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger, useToast } from "./ui";
 import { DataExtractionTab } from "../pages/tabs/DataExtractionTab";
+import { ExecutionLogTab } from "../pages/tabs/ExecutionLogTab";
 import { LangGraphAgentTab } from "../pages/tabs/LangGraphAgentTab";
 import { SqlDatabaseTab } from "../pages/tabs/SqlDatabaseTab";
 import { TrendsTab } from "../pages/tabs/TrendsTab";
 
-const tabValues = ["trends", "extraction", "sql", "agent"] as const;
+const tabValues = ["trends", "extraction", "sql", "agent", "execution_log"] as const;
 type TabValue = (typeof tabValues)[number];
 
 function getHashTab(): TabValue {
@@ -90,6 +91,7 @@ export function AppShell() {
       { value: "extraction" as const, label: "Data Extraction", hint: "Ingest signals and approve keywords before analysis." },
       { value: "sql" as const, label: "SQL Database", hint: "Inspect raw rows in the local warehouse." },
       { value: "agent" as const, label: "LangGraph Agent", hint: "Stream a multi-step run with tools and traces." },
+      { value: "execution_log" as const, label: "Execution log", hint: "Extraction and agent run history, errors, and detailed traces." },
     ],
     [],
   );
@@ -128,6 +130,9 @@ export function AppShell() {
           </TabsContent>
           <TabsContent value="agent">
             <LangGraphAgentTab workbench={workbench} />
+          </TabsContent>
+          <TabsContent value="execution_log">
+            <ExecutionLogTab workbench={workbench} />
           </TabsContent>
         </Tabs>
       </div>

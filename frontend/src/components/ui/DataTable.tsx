@@ -80,7 +80,7 @@ export function DataTable<Row>({
                     {column.sortable ? (
                       <button
                         type="button"
-                        className="inline-flex items-center gap-2 rounded-full px-2 py-1 transition hover:bg-white/5"
+                        className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-slate-200 transition hover:bg-slate-800/60"
                         onClick={() => onSort?.(String(column.key))}
                       >
                         <span>{column.label}</span>
@@ -110,7 +110,7 @@ export function DataTable<Row>({
                     key={rowKey(row, index)}
                     className={cn(
                       "border-b border-white/5 last:border-b-0",
-                      onRowClick ? "cursor-pointer transition hover:bg-white/4" : "",
+                      onRowClick ? "cursor-pointer transition hover:bg-slate-800/45" : "",
                     )}
                     onClick={() => onRowClick?.(row)}
                   >
