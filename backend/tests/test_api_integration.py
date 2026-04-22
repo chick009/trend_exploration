@@ -81,6 +81,9 @@ class WatchOnlySynthChatModel:
                                 "canonical_term": term,
                                 "entity_type": "ingredient",
                                 "lens": "Momentum",
+                                "trend_statement": (
+                                    "Consumers are shifting toward gentler barrier-supporting routines as sensitivity complaints rise."
+                                ),
                                 "data_pattern": f"{term} shows multiple reinforcing rows in the provided market slice.",
                                 "viral_reasoning": f"{term} is appearing across more than one signal, which suggests momentum instead of isolated noise.",
                                 "strongest_signal": "social",
@@ -102,6 +105,7 @@ class WatchOnlySynthChatModel:
                             {
                                 "canonical_term": term,
                                 "status": "watch",
+                                "trend_statement": None,
                                 "challenge_notes": [f"{term} still lacks enough multi-signal confirmation."],
                                 "hype_only": False,
                                 "seasonal_risk": False,

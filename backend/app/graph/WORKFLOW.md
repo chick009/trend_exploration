@@ -146,12 +146,13 @@ Per `active_region`, the node:
 - Builds a lens-specific data slice
 - Calls `ChatOpenAI.with_structured_output(LensCandidateBatch)` once per lens
 - Requires each candidate to return:
+  - `trend_statement` — ONE sentence abstracting the signal into a general consumer/category trend (never a product or single brand)
   - `data_pattern`
   - `viral_reasoning`
   - `strongest_signal`
   - `weakest_signal`
   - `self_confidence`
-- Merges duplicate terms across lenses while preserving `reasoning_blocks`
+- Merges duplicate terms across lenses while preserving `reasoning_blocks` and carrying `trend_statement` from the highest-confidence lens
 
 The node writes `trend_candidates`, `execution_log`, and branch-local `source_batch_ids`.
 
@@ -179,6 +180,7 @@ LLM step:
   - `confirmed`
   - `watch`
   - `noise`
+- May optionally sharpen `trend_statement` (must stay a one-sentence general trend, never a product)
 - Adds `challenge_notes`, `hype_only`, and `seasonal_risk`
 
 Final behavior:
@@ -194,7 +196,8 @@ Final behavior:
 
 Builds the API report shape:
 
-- `headline`
+- `trend_statement` (one-sentence abstracted general trend)
+- `headline` (defaults to `trend_statement` when present, otherwise falls back to a term-based sentence)
 - `why_viral`
 - evidence strings for social, search, sales, and cross-market coverage
 - `signal_chips`

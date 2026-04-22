@@ -93,26 +93,37 @@ def _invoke_lens(
     intent: dict,
     data_slice: dict[str, list[dict[str, Any]]],
 ) -> tuple[LensCandidateBatch, graph_llm.LlmTrace]:
-    system_prompt = "Return structured trend candidates as JSON only."
+    system_prompt = (
+        "You are a senior beauty-trend strategist. "
+        "Return structured trend candidates as JSON only."
+    )
     prompt = f"""
-You are generating beauty-trend candidates for the {active_region} market.
-Analytical lens: {lens.name}
-Lens goal: {lens.description}
+You are analyzing beauty signals for the {active_region} market through the "{lens.name}" lens.
+Lens focus: {lens.description}
 
-Use only canonical_term values already present in the provided data.
-Return at most 5 candidates.
+Propose at most 5 candidate trends. Fewer is better when signals are thin.
 
-For each candidate:
-1. `data_pattern` must cite concrete numbers from the rows.
-2. `viral_reasoning` must explain why this looks like a trend rather than noise.
-3. `strongest_signal` and `weakest_signal` must reflect the available evidence.
-4. `self_confidence` must be high, medium, or low.
-5. Return JSON with a top-level `candidates` array.
+For EACH candidate, fill the schema with:
+1. `canonical_term` — MUST already appear as a `canonical_term` in the data rows below. Never invent new terms.
+2. `trend_statement` — ONE sentence (<= 25 words) that abstracts the signal into a general consumer or category trend.
+   - Describe a behavior, routine, concern, aesthetic, or benefit shift that the data points to.
+   - Phrase it as a trend, e.g. "Consumers in {active_region} are shifting to X because Y", "Demand for X is rising as Y", "X is emerging as a new approach to Y".
+   - NEVER name a product, SKU, or single brand as the trend. You may reference an ingredient, function, category, or behavior.
+   - It should be understandable without knowing the canonical_term.
+3. `data_pattern` — cite concrete numbers from the rows (engagement, WoW delta, sales velocity, post counts, markets observed).
+4. `viral_reasoning` — explain why these numbers look like a real trend instead of noise, a one-off spike, or a seasonal echo.
+5. `strongest_signal` / `weakest_signal` — where the evidence is strongest and weakest (social, search, sales, or cross_market).
+6. `self_confidence` — "high", "medium", or "low" based on evidence strength and breadth.
+
+Hard rules:
+- Do not output two candidates that describe essentially the same trend under different terms.
+- Do not restate the canonical_term as the trend statement.
+- Return JSON with a top-level `candidates` array that matches the schema exactly.
 
 Intent:
 {json.dumps(intent, default=str)}
 
-Data:
+Data rows (already filtered to this lens and market):
 {json.dumps(data_slice, default=str)}
 """.strip()
     return graph_llm.invoke_json_response_with_trace(
@@ -132,6 +143,7 @@ def _merge_candidate(
 ) -> dict[str, Any]:
     reasoning_block = {
         "lens": lens_name,
+        "trend_statement": llm_candidate.get("trend_statement", ""),
         "data_pattern": llm_candidate["data_pattern"],
         "viral_reasoning": llm_candidate["viral_reasoning"],
         "strongest_signal": llm_candidate["strongest_signal"],
@@ -144,6 +156,7 @@ def _merge_candidate(
             "market": active_region,
             "lens": lens_name,
             "lenses": [lens_name],
+            "trend_statement": llm_candidate.get("trend_statement", ""),
             "data_pattern": llm_candidate["data_pattern"],
             "viral_reasoning": llm_candidate["viral_reasoning"],
             "strongest_signal": llm_candidate["strongest_signal"],
@@ -163,6 +176,11 @@ def _merge_candidate(
         current["data_pattern"] = llm_candidate["data_pattern"]
         current["viral_reasoning"] = llm_candidate["viral_reasoning"]
         current["lens"] = lens_name
+        new_statement = llm_candidate.get("trend_statement", "")
+        if new_statement:
+            current["trend_statement"] = new_statement
+    elif not current.get("trend_statement") and llm_candidate.get("trend_statement"):
+        current["trend_statement"] = llm_candidate["trend_statement"]
     return current
 
 

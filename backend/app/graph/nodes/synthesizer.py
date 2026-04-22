@@ -90,6 +90,7 @@ def _invoke_verdicts(candidates: list[dict[str, Any]]) -> tuple[dict[str, dict[s
     payload = [
         {
             "canonical_term": candidate["canonical_term"],
+            "trend_statement": candidate.get("trend_statement", ""),
             "markets": candidate.get("markets", [candidate.get("market")]),
             "virality_score": candidate["virality_score"],
             "confidence_tier": candidate["confidence_tier"],
@@ -105,22 +106,28 @@ def _invoke_verdicts(candidates: list[dict[str, Any]]) -> tuple[dict[str, dict[s
         }
         for candidate in candidates
     ]
-    system_prompt = "Return structured skeptical verdicts as JSON only."
+    system_prompt = (
+        "You are a skeptical senior trend analyst. "
+        "Return structured verdicts as JSON only."
+    )
     prompt = f"""
-You are a skeptical trend analyst reviewing candidate trends.
-For each candidate, challenge it on:
-1. Seasonal repeat risk.
-2. Whether one post is driving the whole signal.
-3. Whether social leads or lags search.
-4. Whether there is sales confirmation or only hype.
-5. Whether the candidate is truly emerging versus a baseline spike.
+Review each candidate trend and decide whether it is a real emerging trend or noise.
 
-Return one verdict per canonical_term with:
-- status: confirmed, watch, or noise
-- concise challenge_notes
-- hype_only true/false
-- seasonal_risk true/false
-- Return JSON with a top-level `verdicts` array.
+For every candidate, weigh these challenges:
+1. Is `trend_statement` a genuine behavioral or category shift, or just repackaged baseline hype?
+2. Could this be a seasonal / cyclical repeat rather than a new trend?
+3. Is the signal driven by one viral post, or by a broad pattern across sources?
+4. Do sales and search confirm the social story, or does social lead alone?
+5. Is the space truly emerging, or already saturated / mature?
+
+Return ONE verdict per `canonical_term`:
+- `status`: "confirmed" | "watch" | "noise". Be strict: mark "noise" when the signal is thin, duplicative, or purely hype.
+- `trend_statement`: optional. Provide ONLY if you can sharpen the abstraction. Keep it ONE sentence, general (behavior, routine, aesthetic, benefit). NEVER a product or single brand. Omit/null if the existing statement is already correct.
+- `challenge_notes`: 1-3 short, concrete critiques that reference specific weaknesses in the evidence.
+- `hype_only`: true if the signal is purely social without commerce or search backing.
+- `seasonal_risk`: true if this is plausibly a recurring seasonal pattern.
+
+Return JSON with a top-level `verdicts` array matching the schema.
 
 Candidates:
 {json.dumps(payload, default=str)}
@@ -195,7 +202,12 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
                 "self_confidence",
             ):
                 existing[key] = candidate.get(key)
+            new_statement = (candidate.get("trend_statement") or "").strip()
+            if new_statement:
+                existing["trend_statement"] = new_statement
             existing["provisional_virality_score"] = candidate["provisional_virality_score"]
+        elif not existing.get("trend_statement") and candidate.get("trend_statement"):
+            existing["trend_statement"] = candidate["trend_statement"]
 
     synthesized = []
     prior_snapshot = state.get("prior_snapshot", {})
@@ -293,6 +305,9 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
         if verdict.get("seasonal_risk") and candidate["confidence_tier"] != "high":
             final_status = "watch"
         candidate["status"] = final_status
+        sharpened_statement = (verdict.get("trend_statement") or "").strip()
+        if sharpened_statement:
+            candidate["trend_statement"] = sharpened_statement
         candidate["challenge_notes"] = verdict.get("challenge_notes", [])
         candidate["hype_only"] = verdict.get("hype_only", False)
         candidate["seasonal_risk"] = verdict.get("seasonal_risk", False)

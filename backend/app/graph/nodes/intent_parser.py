@@ -177,22 +177,33 @@ def build_intent_state_update(state: TrendDiscoveryState) -> TrendDiscoveryState
     llm_intent: QueryIntent | None = None
     tool_invocations: list[dict] = []
     if user_query:
-        system_prompt = "Return only structured intent fields as JSON."
+        system_prompt = (
+            "You convert a free-form trend-analysis request into a compact, "
+            "machine-readable QueryIntent. Return JSON only."
+        )
         prompt = f"""
-You convert a trend-analysis request into strict structured intent.
-Use only these market codes: {list(SUPPORTED_MARKETS)}.
-Use only these categories: {sorted(SUPPORTED_CATEGORIES)}.
-Use only these entity types: {sorted(SUPPORTED_ENTITY_TYPES)}.
-Respect the explicit UI constraints from the request context.
-Return a compact intent for a V2 single-run analysis.
+Produce a QueryIntent for a single V2 trend-analysis run.
 
-Request context:
+Allowed values:
+- markets ⊆ {list(SUPPORTED_MARKETS)}
+- category ∈ {sorted(SUPPORTED_CATEGORIES)}
+- entity_types ⊆ {sorted(SUPPORTED_ENTITY_TYPES)}
+- recency_days ∈ [1, 30]
+- analysis_mode ∈ ["single_market", "cross_market"]
+
+UI constraints (these OVERRIDE anything inferred from the user query):
 - requested_market: {state.get("market")}
 - requested_category: {state.get("category")}
 - requested_recency_days: {state.get("recency_days")}
 - requested_analysis_mode: {state.get("analysis_mode")}
 
-Schema reference:
+Rules:
+- If requested_market is a single market, `markets` must be exactly that market.
+- If requested_analysis_mode is "cross_market" or requested_market is "cross", include all supported markets.
+- If requested_category is a specific category, keep it; only use "all" when explicitly allowed.
+- Set `focus_hint` to a short natural-language hint for downstream lenses ONLY when the user is clearly asking about a specific angle (e.g. "ingredient breakouts", "brand launches", "cross-market diffusion"). Otherwise return null.
+
+Data sources available downstream (context only, for informing focus_hint):
 {PLANNER_SCHEMA_REFERENCE}
 
 User query:

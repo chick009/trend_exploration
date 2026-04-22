@@ -17,6 +17,9 @@ def _trend_stage(score: float) -> str:
 
 
 def _build_headline(candidate: dict) -> str:
+    statement = (candidate.get("trend_statement") or "").strip()
+    if statement:
+        return statement
     if candidate["search_score"] >= candidate["social_score"] and candidate["search_score"] >= candidate["sales_score"]:
         return f"Search breakout building around {candidate['canonical_term']}"
     if candidate["sales_score"] >= candidate["social_score"]:
@@ -44,6 +47,7 @@ def run_report_formatter(state: TrendDiscoveryState) -> TrendDiscoveryState:
             "entity_type": candidate["entity_type"],
             "virality_score": candidate["virality_score"],
             "confidence_tier": candidate["confidence_tier"],
+            "trend_statement": (candidate.get("trend_statement") or "").strip(),
             "headline": _build_headline(candidate),
             "why_viral": _build_why_viral(candidate),
             "evidence": {

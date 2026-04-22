@@ -74,6 +74,9 @@ class FakeStructuredInvoker:
                     "canonical_term": term,
                     "entity_type": "ingredient",
                     "lens": "Momentum",
+                    "trend_statement": (
+                        "Consumers are shifting toward gentler barrier-supporting routines as sensitivity complaints rise."
+                    ),
                     "data_pattern": f"{term} shows multiple reinforcing rows in the provided market slice.",
                     "viral_reasoning": f"{term} is appearing across more than one signal, which suggests momentum instead of isolated noise.",
                     "strongest_signal": "social",
@@ -92,6 +95,7 @@ class FakeStructuredInvoker:
                     {
                         "canonical_term": term,
                         "status": "confirmed" if index < 3 else "watch",
+                        "trend_statement": None,
                         "challenge_notes": [f"{term} has multi-signal support in the canned test verdict."],
                         "hype_only": False,
                         "seasonal_risk": False,
@@ -150,6 +154,9 @@ class FakeChatModel:
                                 "canonical_term": term,
                                 "entity_type": "ingredient",
                                 "lens": "Momentum",
+                                "trend_statement": (
+                                    "Consumers are shifting toward gentler barrier-supporting routines as sensitivity complaints rise."
+                                ),
                                 "data_pattern": f"{term} shows multiple reinforcing rows in the provided market slice.",
                                 "viral_reasoning": f"{term} is appearing across more than one signal, which suggests momentum instead of isolated noise.",
                                 "strongest_signal": "social",
@@ -171,6 +178,7 @@ class FakeChatModel:
                             {
                                 "canonical_term": term,
                                 "status": "confirmed" if index < 3 else "watch",
+                                "trend_statement": None,
                                 "challenge_notes": [f"{term} has multi-signal support in the canned test verdict."],
                                 "hype_only": False,
                                 "seasonal_risk": False,

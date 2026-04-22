@@ -78,6 +78,7 @@ export type TrendCard = {
   entity_type: string;
   virality_score: number;
   confidence_tier: string;
+  trend_statement?: string;
   headline: string;
   why_viral: string;
   evidence: TrendEvidence;

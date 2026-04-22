@@ -30,6 +30,13 @@ class LensCandidate(BaseModel):
     canonical_term: str
     entity_type: EntityTypeName | str = "ingredient"
     lens: str
+    trend_statement: str = Field(
+        ...,
+        description=(
+            "One sentence (<= 25 words) describing the GENERAL consumer or category trend "
+            "the data points to. Must not be a product, SKU, or single brand name."
+        ),
+    )
     data_pattern: str
     viral_reasoning: str
     strongest_signal: SignalName = "social"
@@ -44,6 +51,13 @@ class LensCandidateBatch(BaseModel):
 class SynthesizerVerdict(BaseModel):
     canonical_term: str
     status: TrendStatus = "watch"
+    trend_statement: str | None = Field(
+        default=None,
+        description=(
+            "Optional sharpened one-sentence trend abstraction. Keep it general (behavior, "
+            "routine, aesthetic, or benefit shift); never a product or single brand."
+        ),
+    )
     challenge_notes: list[str] = Field(default_factory=list)
     hype_only: bool = False
     seasonal_risk: bool = False
