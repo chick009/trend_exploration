@@ -48,7 +48,8 @@ function filterTrends(
     return (
       t.term.toLowerCase().includes(q) ||
       t.headline.toLowerCase().includes(q) ||
-      t.why_viral.toLowerCase().includes(q)
+      t.why_viral.toLowerCase().includes(q) ||
+      (t.viral_reasons ?? []).some((reason) => reason.toLowerCase().includes(q))
     );
   };
 
@@ -187,7 +188,7 @@ export function TrendsTab({ workbench }: Props) {
                   type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Term, headline, or why viral…"
+                  placeholder="Trend, signal term, or why viral…"
                   className="w-full"
                 />
               </label>
@@ -196,7 +197,7 @@ export function TrendsTab({ workbench }: Props) {
                 <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
                   <option value="virality">Virality (high → low)</option>
                   <option value="rank">Rank</option>
-                  <option value="term">Term A–Z</option>
+                  <option value="term">Signal term A–Z</option>
                 </select>
               </label>
               <label className="grid min-w-[160px] gap-1.5">

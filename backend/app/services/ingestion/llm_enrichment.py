@@ -230,7 +230,7 @@ class LLMEnrichmentService:
             positivity_score=positivity_score,
         )
         return EnrichmentResult(
-            llm_category=inferred_category,
+            llm_category=self._normalize_hb_category(inferred_category, category_hint=category_hint),
             llm_subcategory=subcategory,
             positivity_score=positivity_score,
             sentiment_label=sentiment_label,
@@ -301,7 +301,7 @@ Text:
             content = body["choices"][0]["message"]["content"]
             parsed = self._parse_json_payload(content)
             return EnrichmentResult(
-                llm_category=str(parsed.get("llm_category") or category_hint or "skincare"),
+                llm_category=self._normalize_hb_category(parsed.get("llm_category"), category_hint=category_hint),
                 llm_subcategory=str(parsed.get("llm_subcategory") or "general"),
                 positivity_score=self._clamp_score(parsed.get("positivity_score"), default=0.5),
                 sentiment_label=str(parsed.get("sentiment_label") or "mixed"),
@@ -505,6 +505,46 @@ text:
         if hint_mapped:
             return hint_mapped
         return "skincare"
+
+    def _normalize_hb_category(self, value: object, *, category_hint: str | None) -> str:
+        mapped = self._map_hb_category_value(value)
+        if mapped:
+            return mapped
+        hint_mapped = self._map_hb_category_value(category_hint)
+        if hint_mapped:
+            return hint_mapped
+        return "skincare"
+
+    def _map_hb_category_value(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip().lower()
+        if not cleaned or cleaned == "all":
+            return None
+
+        direct_aliases = {
+            "supplement": "supplements",
+            "supplements": "supplements",
+            "beauty supplement": "supplements",
+            "beauty supplements": "supplements",
+        }
+        if cleaned in direct_aliases:
+            return direct_aliases[cleaned]
+        if cleaned in {"skincare", "haircare", "makeup"}:
+            return cleaned
+
+        tokens = [token.strip() for token in re.split(r"[,;/|]", cleaned) if token.strip()]
+        for token in tokens:
+            mapped = direct_aliases.get(token)
+            if mapped:
+                return mapped
+            if token in {"skincare", "haircare", "makeup"}:
+                return token
+
+        for category in ("skincare", "haircare", "makeup", "supplement", "supplements"):
+            if re.search(rf"\b{re.escape(category)}\b", cleaned):
+                return direct_aliases.get(category, category)
+        return None
 
     def _map_category_value(self, value: object) -> str | None:
         if not isinstance(value, str):

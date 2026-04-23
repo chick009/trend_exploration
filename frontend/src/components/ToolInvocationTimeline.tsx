@@ -43,9 +43,65 @@ function countByKind(invocations: ToolInvocation[]): Record<ToolInvocationKind, 
   return counts;
 }
 
+function llmUsage(entry: ToolInvocation) {
+  const metadata = entry.metadata ?? {};
+  return {
+    promptTokens: typeof metadata.prompt_tokens === "number" ? metadata.prompt_tokens : 0,
+    completionTokens: typeof metadata.completion_tokens === "number" ? metadata.completion_tokens : 0,
+    totalTokens:
+      typeof metadata.total_tokens === "number"
+        ? metadata.total_tokens
+        : (typeof metadata.prompt_tokens === "number" ? metadata.prompt_tokens : 0) +
+          (typeof metadata.completion_tokens === "number" ? metadata.completion_tokens : 0),
+    estimatedCostUsd: typeof metadata.estimated_cost_usd === "number" ? metadata.estimated_cost_usd : null,
+  };
+}
+
+function summarizeLlmInvocations(invocations: ToolInvocation[]) {
+  return invocations
+    .filter((entry) => entry.tool_kind === "llm")
+    .reduce(
+      (summary, entry) => {
+        const usage = llmUsage(entry);
+        summary.callCount += 1;
+        summary.promptTokens += usage.promptTokens;
+        summary.completionTokens += usage.completionTokens;
+        summary.totalTokens += usage.totalTokens;
+        summary.totalLatencyMs += entry.duration_ms ?? 0;
+        if (usage.estimatedCostUsd != null) {
+          summary.estimatedCostUsd += usage.estimatedCostUsd;
+        } else {
+          summary.hasUnknownCost = true;
+        }
+        return summary;
+      },
+      {
+        callCount: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        totalLatencyMs: 0,
+        estimatedCostUsd: 0,
+        hasUnknownCost: false,
+      },
+    );
+}
+
+function formatTokenCount(value: number): string {
+  return value.toLocaleString();
+}
+
+function formatUsd(value?: number | null): string | null {
+  if (value == null || Number.isNaN(value)) {
+    return null;
+  }
+  return `$${value.toFixed(4)}`;
+}
+
 export function ToolInvocationTimeline({ invocations, runStatus }: Props) {
   const counts = countByKind(invocations);
   const isRunning = runStatus === "running" || runStatus === "queued";
+  const llmSummary = summarizeLlmInvocations(invocations);
 
   return (
     <Card>
@@ -63,6 +119,11 @@ export function ToolInvocationTimeline({ invocations, runStatus }: Props) {
             <Badge tone={KIND_TONE.sql}>SQL · {counts.sql}</Badge>
             <Badge tone={KIND_TONE.llm}>LLM · {counts.llm}</Badge>
             <Badge tone={KIND_TONE.memory}>Memory · {counts.memory}</Badge>
+            {llmSummary.callCount > 0 ? <Badge tone="accent">Tokens · {formatTokenCount(llmSummary.totalTokens)}</Badge> : null}
+            {llmSummary.callCount > 0 ? <Badge tone="accent">Latency · {formatDuration(llmSummary.totalLatencyMs)}</Badge> : null}
+            {llmSummary.callCount > 0 && !llmSummary.hasUnknownCost && llmSummary.estimatedCostUsd > 0 ? (
+              <Badge tone="accent">Cost · {formatUsd(llmSummary.estimatedCostUsd)}</Badge>
+            ) : null}
           </div>
         </div>
       </CardHeader>
@@ -114,6 +175,17 @@ export function ToolInvocationTimeline({ invocations, runStatus }: Props) {
                   <span className="text-slate-500">Output: </span>
                   {entry.output_summary}
                 </p>
+              ) : null}
+
+              {entry.tool_kind === "llm" ? (
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <Badge tone="accent">Prompt {formatTokenCount(llmUsage(entry).promptTokens)}</Badge>
+                  <Badge tone="accent">Completion {formatTokenCount(llmUsage(entry).completionTokens)}</Badge>
+                  <Badge tone="accent">Total {formatTokenCount(llmUsage(entry).totalTokens)}</Badge>
+                  {llmUsage(entry).estimatedCostUsd != null ? (
+                    <Badge tone="accent">Cost {formatUsd(llmUsage(entry).estimatedCostUsd)}</Badge>
+                  ) : null}
+                </div>
               ) : null}
 
               {entry.error ? (

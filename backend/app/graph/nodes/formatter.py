@@ -5,6 +5,23 @@ from uuid import uuid4
 
 from app.graph.state import TrendDiscoveryState
 
+TREND_SENTENCE_CUES = (
+    "consumers",
+    "demand",
+    "interest",
+    "momentum",
+    "shift",
+    "shifting",
+    "rising",
+    "growing",
+    "seeking",
+    "leaning",
+    "prioritizing",
+    "emerging",
+    "accelerating",
+    "building",
+)
+
 
 def _trend_stage(score: float) -> str:
     if score >= 0.8:
@@ -16,24 +33,82 @@ def _trend_stage(score: float) -> str:
     return "early"
 
 
+def _normalize_sentence(text: str) -> str:
+    normalized = " ".join(text.split()).strip()
+    if not normalized:
+        return ""
+    if normalized[-1] not in ".!?":
+        normalized += "."
+    return normalized
+
+
+def _looks_like_descriptive_trend(candidate: dict, statement: str) -> bool:
+    normalized = _normalize_sentence(statement)
+    if not normalized:
+        return False
+    normalized_core = normalized.rstrip(".!?").strip().lower()
+    canonical_term = str(candidate.get("canonical_term") or "").strip().lower()
+    if normalized_core == canonical_term:
+        return False
+    if len(normalized_core.split()) >= 6:
+        return True
+    return any(cue in normalized_core for cue in TREND_SENTENCE_CUES)
+
+
+def _fallback_trend_sentence(candidate: dict) -> str:
+    market = candidate.get("market")
+    market_text = f" in {market}" if market else ""
+    category = candidate.get("category")
+    category_text = category if category and category != "all" else "beauty"
+    term = candidate["canonical_term"]
+    entity_type = candidate.get("entity_type")
+
+    if candidate["search_score"] >= candidate["social_score"] and candidate["search_score"] >= candidate["sales_score"]:
+        return _normalize_sentence(
+            f"Search interest{market_text} is accelerating around {term}, signaling a broader shift in {category_text} demand"
+        )
+    if candidate["sales_score"] >= candidate["social_score"]:
+        return _normalize_sentence(
+            f"Purchase momentum{market_text} is building around {term}, suggesting the trend is moving from awareness into conversion"
+        )
+    if entity_type == "brand":
+        return _normalize_sentence(
+            f"Consumers{market_text} are responding to {term}-led brand momentum in {category_text}"
+        )
+    if entity_type == "function":
+        return _normalize_sentence(
+            f"Consumers{market_text} are leaning further into {term}-oriented {category_text} routines"
+        )
+    return _normalize_sentence(
+        f"Consumers{market_text} are increasingly seeking {term}-led solutions within {category_text}"
+    )
+
+
 def _build_headline(candidate: dict) -> str:
     statement = (candidate.get("trend_statement") or "").strip()
-    if statement:
-        return statement
-    if candidate["search_score"] >= candidate["social_score"] and candidate["search_score"] >= candidate["sales_score"]:
-        return f"Search breakout building around {candidate['canonical_term']}"
-    if candidate["sales_score"] >= candidate["social_score"]:
-        return f"Sales momentum confirms interest in {candidate['canonical_term']}"
-    return f"Social buzz is clustering around {candidate['canonical_term']}"
+    if _looks_like_descriptive_trend(candidate, statement):
+        return _normalize_sentence(statement)
+    return _fallback_trend_sentence(candidate)
 
 
-def _build_why_viral(candidate: dict) -> str:
-    primary_reason = candidate.get("viral_reasoning") or candidate.get("data_pattern") or (
-        f"{candidate['canonical_term']} is showing aligned movement across the tracked signals."
+def _build_viral_reasons(candidate: dict) -> list[str]:
+    normalized: list[str] = []
+    for reason in candidate.get("viral_reasons", []):
+        cleaned = _normalize_sentence(reason)
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
+        if len(normalized) >= 3:
+            break
+    if normalized:
+        return normalized
+    fallback_reason = candidate.get("viral_reasoning") or candidate.get("data_pattern") or (
+        "The tracked evidence is aligning strongly enough to suggest this is more than isolated noise."
     )
-    if candidate.get("challenge_notes"):
-        return f"{primary_reason} Skeptical review notes: {'; '.join(candidate['challenge_notes'][:2])}."
-    return primary_reason
+    return [_normalize_sentence(fallback_reason)]
+
+
+def _build_why_viral(candidate: dict, viral_reasons: list[str]) -> str:
+    return viral_reasons[0] if viral_reasons else _build_viral_reasons(candidate)[0]
 
 
 def run_report_formatter(state: TrendDiscoveryState) -> TrendDiscoveryState:
@@ -41,17 +116,23 @@ def run_report_formatter(state: TrendDiscoveryState) -> TrendDiscoveryState:
     watch_list = []
     watch_list_only = state.get("watch_list_only", False)
     for index, candidate in enumerate(state.get("synthesized_trends", []), start=1):
+        headline = _build_headline(candidate)
+        viral_reasons = _build_viral_reasons(candidate)
         trend = {
             "rank": index,
             "term": candidate["canonical_term"],
             "entity_type": candidate["entity_type"],
             "virality_score": candidate["virality_score"],
             "confidence_tier": candidate["confidence_tier"],
-            "trend_statement": (candidate.get("trend_statement") or "").strip(),
-            "headline": _build_headline(candidate),
-            "why_viral": _build_why_viral(candidate),
+            "trend_statement": headline,
+            "headline": headline,
+            "why_viral": _build_why_viral(candidate, viral_reasons),
+            "viral_reasons": viral_reasons,
             "evidence": {
-                "social": f"{candidate['social_post_count']} posts; avg engagement {candidate['avg_engagement']:.2f}",
+                "social": (
+                    f"{candidate['social_post_count']} post signals; "
+                    f"avg trend strength {candidate.get('avg_signal_strength', candidate['avg_engagement']):.2f}"
+                ),
                 "search": f"{candidate['search_wow_delta']:.0%} WoW search delta",
                 "sales": f"{candidate['sales_velocity']:.0%} WoW sales velocity; {candidate['restock_count']} restocks",
                 "cross_market": (
@@ -63,7 +144,7 @@ def run_report_formatter(state: TrendDiscoveryState) -> TrendDiscoveryState:
             "signal_chips": [
                 chip
                 for chip, enabled in [
-                    ("REDNOTE", candidate["social_score"] > 0),
+                    ("Post Signals", candidate["social_score"] > 0),
                     ("Google Trends", candidate["search_score"] > 0),
                     ("Sales", candidate["sales_score"] > 0),
                     ("Cross-Market", candidate["cross_market_score"] > 0),

@@ -6,9 +6,10 @@ from typing import Any
 from app.db.repository import (
     get_entity_dictionary,
     get_latest_source_batch_ids,
+    get_post_trend_signal_rows,
+    get_prior_trend_snapshots,
     get_sales_velocity_rows,
     get_search_breakout_rows,
-    get_social_trend_rows,
     json_loads,
 )
 from app.graph.state import TrendDiscoveryState
@@ -44,17 +45,14 @@ def _should_include_entity(entity_type: str, allowed_entity_types: set[str]) -> 
     return not allowed_entity_types or entity_type in allowed_entity_types
 
 
-def select_query_plan(intent: dict) -> tuple[str, ...]:
-    entity_types = set(intent.get("entity_types", []))
-    focus_hint = (intent.get("focus_hint") or "").lower()
+def _normalize_category(value: str | None) -> str:
+    if not value:
+        return "all"
+    return "supplements" if value == "supplement" else value
 
-    if entity_types == {"brand"} or "brand" in focus_hint:
-        return ("sales", "social")
-    if entity_types and entity_types.issubset({"ingredient", "function"}):
-        return ("social", "search", "sales")
-    if intent.get("analysis_mode") == "cross_market":
-        return ("social", "search", "sales")
-    return ("social", "search", "sales")
+
+def select_query_plan(intent: dict) -> tuple[str, ...]:
+    return ("social", "search", "sales", "memory")
 
 
 def _aggregate_social(
@@ -68,37 +66,57 @@ def _aggregate_social(
 ) -> list[dict[str, Any]]:
     aggregate: dict[tuple[str, str], dict[str, Any]] = {}
     for market in markets:
-        for row in get_social_trend_rows(region=market, category=category, recency_days=recency_days):
-            for raw_term in json_loads(row["entity_list"], []):
-                canonical_term, entity_type, resolved_category = _resolve_entity(
-                    raw_term,
-                    dictionary=dictionary,
-                    alias_map=alias_map,
-                    default_entity_type="ingredient",
-                    fallback_category=category,
-                )
-                if not _should_include_entity(entity_type, allowed_entity_types):
-                    continue
-                key = (market, canonical_term)
-                current = aggregate.setdefault(
-                    key,
-                    {
-                        "canonical_term": canonical_term,
-                        "entity_type": entity_type,
-                        "category": resolved_category,
-                        "market": market,
-                        "social_post_count": 0,
-                        "avg_engagement": 0.0,
-                        "avg_positivity_score": 0.0,
-                        "source_batch_ids": [],
-                    },
-                )
-                current["social_post_count"] += row.get("post_count") or 0
-                current["avg_engagement"] = max(current["avg_engagement"], row.get("avg_engagement") or 0.0)
-                current["avg_positivity_score"] = max(
-                    current["avg_positivity_score"], row.get("avg_positivity_score") or 0.0
-                )
-    return sorted(aggregate.values(), key=lambda item: (item["market"], item["canonical_term"]))
+        for row in get_post_trend_signal_rows(region=market, category=category, recency_days=recency_days):
+            raw_term = row.get("keyword")
+            if not raw_term:
+                continue
+            canonical_term, entity_type, resolved_category = _resolve_entity(
+                raw_term,
+                dictionary=dictionary,
+                alias_map=alias_map,
+                default_entity_type="ingredient",
+                fallback_category=_normalize_category(row.get("signal_category") or category),
+            )
+            if not _should_include_entity(entity_type, allowed_entity_types):
+                continue
+            key = (market, canonical_term)
+            current = aggregate.setdefault(
+                key,
+                {
+                    "canonical_term": canonical_term,
+                    "entity_type": entity_type,
+                    "category": resolved_category,
+                    "market": market,
+                    "social_post_count": 0,
+                    "avg_engagement": 0.0,
+                    "avg_positivity_score": 0.0,
+                    "avg_signal_strength": 0.0,
+                    "avg_novelty": 0.0,
+                    "avg_consumer_intent": 0.0,
+                    "source_batch_ids": set(),
+                },
+            )
+            current["social_post_count"] += row.get("post_count") or 0
+            current["avg_signal_strength"] = max(
+                current["avg_signal_strength"], row.get("avg_signal_strength") or 0.0
+            )
+            current["avg_novelty"] = max(current["avg_novelty"], row.get("avg_novelty") or 0.0)
+            current["avg_consumer_intent"] = max(
+                current["avg_consumer_intent"], row.get("avg_consumer_intent") or 0.0
+            )
+            # Keep legacy field names stable for downstream scoring/state contracts.
+            current["avg_engagement"] = max(current["avg_engagement"], row.get("avg_signal_strength") or 0.0)
+            current["avg_positivity_score"] = max(
+                current["avg_positivity_score"], row.get("avg_consumer_intent") or 0.0
+            )
+            if row.get("source_batch_id"):
+                current["source_batch_ids"].add(row["source_batch_id"])
+
+    results = []
+    for row in aggregate.values():
+        row["source_batch_ids"] = sorted(row["source_batch_ids"])
+        results.append(row)
+    return sorted(results, key=lambda item: (item["market"], item["canonical_term"]))
 
 
 def _aggregate_search(
@@ -205,6 +223,20 @@ def _render_category_clause(column_name: str, category: str) -> str:
     return f" AND COALESCE({column_name}, 'all') = '{category}'"
 
 
+def _render_search_category_clause(category: str) -> str:
+    if category == "all":
+        return ""
+    normalized_expr = (
+        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(llm_category, ''), ';', ','), '/', ','), '|', ','), ' ', ''))"
+    )
+    accepted_categories = ["supplements", "supplement"] if category == "supplements" else [category]
+    clauses = [
+        f"({normalized_expr} = '{accepted}' OR INSTR(',' || {normalized_expr} || ',', ',{accepted},') > 0)"
+        for accepted in accepted_categories
+    ]
+    return " AND (" + " OR ".join(clauses) + ")"
+
+
 def _build_sql_preview(
     *,
     source: str,
@@ -216,20 +248,25 @@ def _build_sql_preview(
     recency_sql = f"-{recency_days} days"
     if source == "social":
         return (
-            "SELECT COALESCE(llm_entities, entity_mentions, '[]') AS entity_list, "
-            "AVG(engagement_score) AS avg_engagement, AVG(positivity_score) AS avg_positivity_score, "
-            "COUNT(*) AS post_count "
-            "FROM social_posts "
-            f"WHERE region IN ({markets_sql}) AND date(post_date) >= date('now', '{recency_sql}')"
-            f"{_render_category_clause('llm_category', category)} AND relevance_score >= 0.4 "
-            "GROUP BY entity_list"
+            "SELECT search_keyword AS keyword, MIN(category) AS signal_category, "
+            "AVG(trend_strength) AS avg_signal_strength, AVG(novelty) AS avg_novelty, "
+            "AVG(consumer_intent) AS avg_consumer_intent, COUNT(*) AS post_count, source_batch_id "
+            "FROM post_trend_signals "
+            f"WHERE region IN ({markets_sql}) AND datetime(processed_at) >= datetime('now', '{recency_sql}') "
+            + (
+                "AND category IN ('supplement', 'supplements') "
+                if category == "supplements"
+                else (f"{_render_category_clause('category', category)} " if category != "all" else "")
+            )
+            + "AND search_keyword IS NOT NULL AND TRIM(search_keyword) != '' "
+            "GROUP BY search_keyword, source_batch_id ORDER BY avg_signal_strength DESC"
         )
     if source == "search":
         return (
             "SELECT keyword, wow_delta, index_value, source_batch_id "
             "FROM search_trends "
             f"WHERE geo IN ({markets_sql}) AND date(snapshot_date) >= date('now', '{recency_sql}') "
-            f"AND is_breakout = 1{_render_category_clause('llm_category', category)} "
+            f"AND is_breakout = 1{_render_search_category_clause(category)} "
             "AND relevance_score >= 0.4 ORDER BY wow_delta DESC"
         )
     if source == "sales":
@@ -241,13 +278,24 @@ def _build_sql_preview(
             f"{_render_category_clause('category', category)} "
             "GROUP BY brand, ingredient_tags, category, source_batch_id ORDER BY avg_velocity DESC"
         )
+    if source == "memory":
+        return (
+            "SELECT canonical_term, market, hb_category, virality_score, confidence_tier, "
+            "sources_count, social_score, search_score, sales_score, cross_market_score, "
+            "analysis_date, source_batch_ids, status "
+            "FROM trend_exploration "
+            f"WHERE market IN ({markets_sql}) AND datetime(analysis_date) >= datetime('now', '-30 days')"
+            f"{_render_category_clause('hb_category', category)} "
+            "ORDER BY market ASC, canonical_term ASC, datetime(analysis_date) DESC"
+        )
     return ""
 
 
 _SIGNAL_TITLES = {
-    "social": "SQL: aggregate RedNote social posts",
+    "social": "SQL: aggregate post trend signals",
     "search": "SQL: aggregate Google Trends breakouts",
     "sales": "SQL: aggregate sales velocity",
+    "memory": "SQL: load prior trend memory",
 }
 
 
@@ -255,7 +303,7 @@ def load_sql_results(
     intent: dict[str, Any],
     *,
     seed_source_batch_ids: list[str] | None = None,
-) -> tuple[dict[str, list[dict[str, Any]]], list[str], tuple[str, ...], list[dict[str, Any]]]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]], list[str], tuple[str, ...], list[dict[str, Any]]]:
     markets = list(intent["markets"])
     category = intent["category"]
     recency_days = intent["recency_days"]
@@ -268,7 +316,9 @@ def load_sql_results(
         "social": [],
         "search": [],
         "sales": [],
+        "memory": [],
     }
+    prior_snapshot: dict[str, dict[str, Any]] = {}
 
     tool_invocations: list[dict[str, Any]] = []
     aggregators = {
@@ -277,7 +327,7 @@ def load_sql_results(
         "sales": _aggregate_sales,
     }
 
-    for source in ("social", "search", "sales"):
+    for source in ("social", "search", "sales", "memory"):
         if source not in query_plan:
             continue
         started_at = now_iso()
@@ -288,14 +338,18 @@ def load_sql_results(
             recency_days=recency_days,
         )
         try:
-            rows = aggregators[source](
-                markets=markets,
-                category=category,
-                recency_days=recency_days,
-                dictionary=dictionary,
-                alias_map=alias_map,
-                allowed_entity_types=allowed_entity_types,
-            )
+            if source == "memory":
+                prior_snapshot = get_prior_trend_snapshots(markets=markets, category=category)
+                rows = sorted(prior_snapshot.values(), key=lambda item: (item["market"], item["canonical_term"]))
+            else:
+                rows = aggregators[source](
+                    markets=markets,
+                    category=category,
+                    recency_days=recency_days,
+                    dictionary=dictionary,
+                    alias_map=alias_map,
+                    allowed_entity_types=allowed_entity_types,
+                )
         except Exception as exc:
             tool_invocations.append(
                 make_tool_invocation(
@@ -344,23 +398,25 @@ def load_sql_results(
         for row in signal_rows:
             source_batch_ids.update(row.get("source_batch_ids", []))
 
-    return sql_results, sorted(source_batch_ids), query_plan, tool_invocations
+    return sql_results, prior_snapshot, sorted(source_batch_ids), query_plan, tool_invocations
 
 
 def run_sql_dispatcher(state: TrendDiscoveryState) -> TrendDiscoveryState:
-    sql_results, source_batch_ids, query_plan, tool_invocations = load_sql_results(
+    sql_results, prior_snapshot, source_batch_ids, query_plan, tool_invocations = load_sql_results(
         state["query_intent"],
         seed_source_batch_ids=list(state.get("source_batch_ids", [])),
     )
 
     return {
         "sql_results": sql_results,
+        "prior_snapshot": prior_snapshot,
         "source_batch_ids": source_batch_ids,
         "execution_log": [
             (
                 "[BackendData] "
                 f"plan={list(query_plan)} social={len(sql_results['social'])} "
-                f"search={len(sql_results['search'])} sales={len(sql_results['sales'])}"
+                f"search={len(sql_results['search'])} sales={len(sql_results['sales'])} "
+                f"memory={len(sql_results['memory'])}"
             )
         ],
         "tool_invocations": tool_invocations,

@@ -106,6 +106,9 @@ class WatchOnlySynthChatModel:
                                 "canonical_term": term,
                                 "status": "watch",
                                 "trend_statement": None,
+                                "viral_reasons": [
+                                    f"{term} still has some evidence strength, but the figures are not broad enough to confirm it yet.",
+                                ],
                                 "challenge_notes": [f"{term} still lacks enough multi-signal confirmation."],
                                 "hype_only": False,
                                 "seasonal_risk": False,
@@ -226,6 +229,10 @@ def test_ingestion_then_analysis_flow(test_database) -> None:
         first_card = (payload["report"]["trends"] or payload["report"]["watch_list"])[0]
         assert "lifecycle_stage" in first_card
         assert "challenge_notes" in first_card
+        assert "viral_reasons" in first_card
+        assert first_card["viral_reasons"]
+        assert payload["report"]["llm_ops"]["overall"]["llm_call_count"] >= 1
+        assert payload["stats"]["llm_ops"]["overall"]["llm_call_count"] >= 1
         assert {"intent_parser", "backend_preload", "trend_gen_agent", "evidence_synthesizer", "formatter", "memory_write"} <= set(
             payload["node_outputs"].keys()
         )

@@ -73,6 +73,37 @@ function totalDuration(invocations: ToolInvocation[]) {
   return invocations.reduce((sum, entry) => sum + (entry.duration_ms ?? 0), 0);
 }
 
+function summarizeScopedLlm(invocations: ToolInvocation[]) {
+  return invocations
+    .filter((entry) => entry.tool_kind === "llm")
+    .reduce(
+      (summary, entry) => {
+        const metadata = entry.metadata ?? {};
+        summary.promptTokens += typeof metadata.prompt_tokens === "number" ? metadata.prompt_tokens : 0;
+        summary.completionTokens += typeof metadata.completion_tokens === "number" ? metadata.completion_tokens : 0;
+        summary.totalTokens +=
+          typeof metadata.total_tokens === "number"
+            ? metadata.total_tokens
+            : (typeof metadata.prompt_tokens === "number" ? metadata.prompt_tokens : 0) +
+              (typeof metadata.completion_tokens === "number" ? metadata.completion_tokens : 0);
+        if (typeof metadata.estimated_cost_usd === "number") {
+          summary.estimatedCostUsd += metadata.estimated_cost_usd;
+          summary.hasKnownCost = true;
+        }
+        return summary;
+      },
+      { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCostUsd: 0, hasKnownCost: false },
+    );
+}
+
+function formatTokenCount(value: number) {
+  return value.toLocaleString();
+}
+
+function formatUsd(value: number) {
+  return `$${value.toFixed(4)}`;
+}
+
 function ScopedGuardrailFlags(nodeId: string, output: unknown, runFlags: string[]) {
   if (nodeId === "memory_write") {
     return runFlags.filter((flag) => flag.toLowerCase().includes("trend_exploration"));
@@ -201,6 +232,7 @@ export function AgentNodeDrawer({ step, analysisRun }: Props) {
   const guardrailFlags = step ? ScopedGuardrailFlags(step.nodeId, nodeOutput, analysisRun?.guardrail_flags ?? []) : [];
   const durationMs = totalDuration(scopedInvocations);
   const llmInvocationCount = scopedInvocations.filter((invocation) => invocation.tool_kind === "llm").length;
+  const llmSummary = summarizeScopedLlm(scopedInvocations);
 
   if (!step) {
     return (
@@ -257,6 +289,22 @@ export function AgentNodeDrawer({ step, analysisRun }: Props) {
             <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3">
               <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Prompt exchanges</div>
               <div className="mt-2 text-sm text-slate-100">{llmInvocationCount}</div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3">
+              <div className="text-xs uppercase tracking-[0.16em] text-slate-500">LLM tokens</div>
+              <div className="mt-2 text-sm text-slate-100">{formatTokenCount(llmSummary.totalTokens)}</div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3">
+              <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Prompt / completion</div>
+              <div className="mt-2 text-sm text-slate-100">
+                {formatTokenCount(llmSummary.promptTokens)} / {formatTokenCount(llmSummary.completionTokens)}
+              </div>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3">
+              <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Estimated cost</div>
+              <div className="mt-2 text-sm text-slate-100">
+                {llmSummary.hasKnownCost ? formatUsd(llmSummary.estimatedCostUsd) : "n/a"}
+              </div>
             </div>
           </div>
 

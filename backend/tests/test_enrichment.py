@@ -97,3 +97,51 @@ def test_score_post_uses_light_model_when_configured(test_database, monkeypatch)
     assert captured["json"]["model"] == "fast-post-model"
     assert result.processing_model == "fast-post-model"
     assert result.region == "SG"
+
+
+def test_enrich_text_normalizes_openrouter_category_values(test_database, monkeypatch) -> None:
+    apply_migrations()
+    seed_reference_data()
+    service = LLMEnrichmentService()
+    service.settings.openrouter_api_key = "fake-key"
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"llm_category":"skincare, makeup","llm_subcategory":"serums",'
+                                '"positivity_score":0.7,"sentiment_label":"positive","relevance_score":0.8,'
+                                '"llm_entities":["niacinamide"],"llm_summary":"Normalized category."}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, path: str, *, headers: dict[str, str], json: dict[str, Any]) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(enrichment_module.httpx, "Client", FakeClient)
+
+    result = service.enrich_text(
+        text="Niacinamide serum is trending again.",
+        category_hint="skincare",
+    )
+
+    assert result.llm_category == "skincare"

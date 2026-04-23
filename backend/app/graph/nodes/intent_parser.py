@@ -58,11 +58,30 @@ Use for sales momentum and restocking questions. Market filter is `region`; rece
 - processed_at DATETIME
 Use for social trend strength / novelty / consumer intent questions. Market filter is `region`; recency filter is `processed_at`.
 
+4. trend_exploration (persisted memory snapshots)
+- canonical_term TEXT
+- entity_type TEXT
+- hb_category TEXT
+- market TEXT
+- virality_score REAL
+- confidence_tier TEXT
+- sources_count INTEGER
+- social_score REAL
+- search_score REAL
+- sales_score REAL
+- cross_market_score REAL
+- analysis_date DATETIME
+- source_batch_ids TEXT
+- status TEXT
+Use for prior trend memory and lifecycle-reference questions. Market filter is `market`; recency filter is `analysis_date`.
+
 Column-name alignment notes:
 - Google Trends market column is `geo`.
 - Sales and post-trend-signals market column is `region`.
-- Search category column is `llm_category`; sales and post-trend-signals category column is `category`.
+- Trend memory market column is `market`.
+- Search category column is `llm_category`; sales and post-trend-signals category column is `category`; memory category column is `hb_category`.
 - Recent Google Trends means `snapshot_date`; recent sales means `week_start`; recent post scoring means `processed_at`.
+- Recent memory means `analysis_date`.
 """.strip()
 
 
@@ -124,6 +143,20 @@ def _render_category_clause(column_name: str, category: str) -> str:
     return f" AND COALESCE({column_name}, 'all') = '{category}'"
 
 
+def _render_search_category_clause(category: str) -> str:
+    if category == "all":
+        return ""
+    normalized_expr = (
+        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(llm_category, ''), ';', ','), '/', ','), '|', ','), ' ', ''))"
+    )
+    accepted_categories = ["supplements", "supplement"] if category == "supplements" else [category]
+    clauses = [
+        f"({normalized_expr} = '{accepted}' OR INSTR(',' || {normalized_expr} || ',', ',{accepted},') > 0)"
+        for accepted in accepted_categories
+    ]
+    return " AND (" + " OR ".join(clauses) + ")"
+
+
 def _build_query_params(query_intent: QueryIntent) -> dict[str, object]:
     query_plan = list(select_query_plan(query_intent.model_dump()))
     markets_sql = ", ".join(f"'{market}'" for market in query_intent.markets)
@@ -132,18 +165,28 @@ def _build_query_params(query_intent: QueryIntent) -> dict[str, object]:
 
     if "social" in query_plan:
         sql_preview["social"] = (
-            "SELECT COALESCE(llm_entities, entity_mentions, '[]') AS entity_list, "
-            "AVG(engagement_score) AS avg_engagement, AVG(positivity_score) AS avg_positivity_score, "
-            "COUNT(*) AS post_count FROM social_posts "
-            f"WHERE region IN ({markets_sql}) AND date(post_date) >= date('now', '{recency_sql}')"
-            f"{_render_category_clause('llm_category', query_intent.category)} AND relevance_score >= 0.4 "
-            "GROUP BY entity_list"
+            "SELECT search_keyword AS keyword, MIN(category) AS signal_category, "
+            "AVG(trend_strength) AS avg_signal_strength, AVG(novelty) AS avg_novelty, "
+            "AVG(consumer_intent) AS avg_consumer_intent, COUNT(*) AS post_count, source_batch_id "
+            "FROM post_trend_signals "
+            f"WHERE region IN ({markets_sql}) AND datetime(processed_at) >= datetime('now', '{recency_sql}') "
+            + (
+                "AND category IN ('supplement', 'supplements') "
+                if query_intent.category == "supplements"
+                else (
+                    f"{_render_category_clause('category', query_intent.category)} "
+                    if query_intent.category != "all"
+                    else ""
+                )
+            )
+            + "AND search_keyword IS NOT NULL AND TRIM(search_keyword) != '' "
+            "GROUP BY search_keyword, source_batch_id ORDER BY avg_signal_strength DESC"
         )
     if "search" in query_plan:
         sql_preview["search"] = (
             "SELECT keyword, wow_delta, index_value, source_batch_id FROM search_trends "
             f"WHERE geo IN ({markets_sql}) AND date(snapshot_date) >= date('now', '{recency_sql}') "
-            f"AND is_breakout = 1{_render_category_clause('llm_category', query_intent.category)} "
+            f"AND is_breakout = 1{_render_search_category_clause(query_intent.category)} "
             "AND relevance_score >= 0.4 ORDER BY wow_delta DESC"
         )
     if "sales" in query_plan:
@@ -154,6 +197,15 @@ def _build_query_params(query_intent: QueryIntent) -> dict[str, object]:
             f"WHERE region IN ({markets_sql}) AND date(week_start) >= date('now', '{recency_sql}')"
             f"{_render_category_clause('category', query_intent.category)} "
             "GROUP BY brand, ingredient_tags, category, source_batch_id ORDER BY avg_velocity DESC"
+        )
+    if "memory" in query_plan:
+        sql_preview["memory"] = (
+            "SELECT canonical_term, market, hb_category, virality_score, confidence_tier, "
+            "sources_count, social_score, search_score, sales_score, cross_market_score, "
+            "analysis_date, source_batch_ids, status FROM trend_exploration "
+            f"WHERE market IN ({markets_sql}) AND datetime(analysis_date) >= datetime('now', '-30 days')"
+            f"{_render_category_clause('hb_category', query_intent.category)} "
+            "ORDER BY market ASC, canonical_term ASC, datetime(analysis_date) DESC"
         )
 
     return {
@@ -229,6 +281,15 @@ User query:
                     status="error",
                     input_summary=f"user_query={user_query[:200]}",
                     error=str(exc),
+                    metadata={
+                        "schema": "QueryIntent",
+                        "model": (trace or {}).get("model"),
+                        "duration_ms": (trace or {}).get("duration_ms"),
+                        "prompt_tokens": (trace or {}).get("prompt_tokens"),
+                        "completion_tokens": (trace or {}).get("completion_tokens"),
+                        "total_tokens": (trace or {}).get("total_tokens"),
+                        "estimated_cost_usd": (trace or {}).get("estimated_cost_usd"),
+                    },
                     system_prompt=(trace or {}).get("system_prompt", system_prompt),
                     user_prompt=(trace or {}).get("user_prompt", prompt),
                     response_text=(trace or {}).get("response_text"),
@@ -254,7 +315,15 @@ User query:
                     f"entity_types={list(llm_intent.entity_types)} "
                     f"analysis_mode={llm_intent.analysis_mode}"
                 ),
-                metadata={"schema": "QueryIntent", "model": trace["model"], "duration_ms": trace["duration_ms"]},
+                metadata={
+                    "schema": "QueryIntent",
+                    "model": trace["model"],
+                    "duration_ms": trace["duration_ms"],
+                    "prompt_tokens": trace.get("prompt_tokens"),
+                    "completion_tokens": trace.get("completion_tokens"),
+                    "total_tokens": trace.get("total_tokens"),
+                    "estimated_cost_usd": trace.get("estimated_cost_usd"),
+                },
                 system_prompt=trace["system_prompt"],
                 user_prompt=trace["user_prompt"],
                 response_text=trace["response_text"],

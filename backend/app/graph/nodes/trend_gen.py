@@ -15,6 +15,8 @@ CONFIDENCE_PRIORITY = {"low": 0, "medium": 1, "high": 2}
 def _term_metrics_lookup(sql_results: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     metrics: dict[str, dict[str, Any]] = {}
     for signal_name, rows in sql_results.items():
+        if signal_name not in {"social", "search", "sales"}:
+            continue
         for row in rows:
             canonical_term = row["canonical_term"]
             current = metrics.setdefault(
@@ -28,6 +30,9 @@ def _term_metrics_lookup(sql_results: dict[str, list[dict[str, Any]]]) -> dict[s
                     "social_post_count": 0,
                     "avg_engagement": 0.0,
                     "avg_positivity_score": 0.0,
+                    "avg_signal_strength": 0.0,
+                    "avg_novelty": 0.0,
+                    "avg_consumer_intent": 0.0,
                     "search_wow_delta": 0.0,
                     "search_index_value": 0.0,
                     "sales_velocity": 0.0,
@@ -46,6 +51,13 @@ def _term_metrics_lookup(sql_results: dict[str, list[dict[str, Any]]]) -> dict[s
                 current["avg_engagement"] = max(current["avg_engagement"], row.get("avg_engagement", 0.0))
                 current["avg_positivity_score"] = max(
                     current["avg_positivity_score"], row.get("avg_positivity_score", 0.0)
+                )
+                current["avg_signal_strength"] = max(
+                    current["avg_signal_strength"], row.get("avg_signal_strength", row.get("avg_engagement", 0.0))
+                )
+                current["avg_novelty"] = max(current["avg_novelty"], row.get("avg_novelty", 0.0))
+                current["avg_consumer_intent"] = max(
+                    current["avg_consumer_intent"], row.get("avg_consumer_intent", row.get("avg_positivity_score", 0.0))
                 )
             elif signal_name == "search":
                 current["search_wow_delta"] = max(current["search_wow_delta"], row.get("search_wow_delta", 0.0))
@@ -110,7 +122,7 @@ For EACH candidate, fill the schema with:
    - Phrase it as a trend, e.g. "Consumers in {active_region} are shifting to X because Y", "Demand for X is rising as Y", "X is emerging as a new approach to Y".
    - NEVER name a product, SKU, or single brand as the trend. You may reference an ingredient, function, category, or behavior.
    - It should be understandable without knowing the canonical_term.
-3. `data_pattern` — cite concrete numbers from the rows (engagement, WoW delta, sales velocity, post counts, markets observed).
+3. `data_pattern` — cite concrete numbers from the rows (post signal strength / novelty / consumer intent, WoW delta, sales velocity, post counts, markets observed).
 4. `viral_reasoning` — explain why these numbers look like a real trend instead of noise, a one-off spike, or a seasonal echo.
 5. `strongest_signal` / `weakest_signal` — where the evidence is strongest and weakest (social, search, sales, or cross_market).
 6. `self_confidence` — "high", "medium", or "low" based on evidence strength and breadth.
@@ -221,7 +233,17 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
                     status="error",
                     input_summary=f"lens={lens.name} market={active_region} input_rows={input_rows}",
                     error=str(exc),
-                    metadata={"lens": lens.name, "market": active_region},
+                    metadata={
+                        "lens": lens.name,
+                        "market": active_region,
+                        "schema": "LensCandidateBatch",
+                        "model": (trace or {}).get("model"),
+                        "duration_ms": (trace or {}).get("duration_ms"),
+                        "prompt_tokens": (trace or {}).get("prompt_tokens"),
+                        "completion_tokens": (trace or {}).get("completion_tokens"),
+                        "total_tokens": (trace or {}).get("total_tokens"),
+                        "estimated_cost_usd": (trace or {}).get("estimated_cost_usd"),
+                    },
                     system_prompt=(trace or {}).get("system_prompt"),
                     user_prompt=(trace or {}).get("user_prompt"),
                     response_text=(trace or {}).get("response_text"),
@@ -254,6 +276,10 @@ def run_trend_gen_agent(state: TrendDiscoveryState) -> TrendDiscoveryState:
                     "schema": "LensCandidateBatch",
                     "model": trace["model"],
                     "duration_ms": trace["duration_ms"],
+                    "prompt_tokens": trace.get("prompt_tokens"),
+                    "completion_tokens": trace.get("completion_tokens"),
+                    "total_tokens": trace.get("total_tokens"),
+                    "estimated_cost_usd": trace.get("estimated_cost_usd"),
                 },
                 system_prompt=trace["system_prompt"],
                 user_prompt=trace["user_prompt"],

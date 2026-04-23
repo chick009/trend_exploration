@@ -96,6 +96,10 @@ class FakeStructuredInvoker:
                         "canonical_term": term,
                         "status": "confirmed" if index < 3 else "watch",
                         "trend_statement": None,
+                        "viral_reasons": [
+                            f"{term} shows enough aligned evidence across the tracked sources to suggest real momentum.",
+                            f"The figures indicate {term} is moving beyond isolated buzz and into broader adoption signals.",
+                        ],
                         "challenge_notes": [f"{term} has multi-signal support in the canned test verdict."],
                         "hype_only": False,
                         "seasonal_risk": False,
@@ -179,6 +183,10 @@ class FakeChatModel:
                                 "canonical_term": term,
                                 "status": "confirmed" if index < 3 else "watch",
                                 "trend_statement": None,
+                                "viral_reasons": [
+                                    f"{term} shows enough aligned evidence across the tracked sources to suggest real momentum.",
+                                    f"The figures indicate {term} is moving beyond isolated buzz and into broader adoption signals.",
+                                ],
                                 "challenge_notes": [f"{term} has multi-signal support in the canned test verdict."],
                                 "hype_only": False,
                                 "seasonal_risk": False,

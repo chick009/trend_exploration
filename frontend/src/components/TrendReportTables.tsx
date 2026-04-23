@@ -20,7 +20,17 @@ function shortText(text: string, max = 96): string {
 
 const trendTableColumns: DataColumn<TrendCard>[] = [
   { key: "rank", label: "Rank", align: "right", className: "whitespace-nowrap" },
-  { key: "term", label: "Term", className: "min-w-[140px] font-medium" },
+  {
+    key: "headline",
+    label: "Trend",
+    className: "max-w-[min(100vw,28rem)] text-slate-300",
+    render: (row) => (
+      <span className="line-clamp-2" title={row.trend_statement || row.headline}>
+        {shortText(row.trend_statement || row.headline, 120)}
+      </span>
+    ),
+  },
+  { key: "term", label: "Signal term", className: "min-w-[140px] font-medium" },
   {
     key: "virality_score",
     label: "Virality",
@@ -31,16 +41,6 @@ const trendTableColumns: DataColumn<TrendCard>[] = [
   { key: "confidence_tier", label: "Tier", className: "whitespace-nowrap" },
   { key: "trend_stage", label: "Stage", className: "whitespace-nowrap" },
   { key: "entity_type", label: "Type", className: "whitespace-nowrap" },
-  {
-    key: "headline",
-    label: "Headline",
-    className: "max-w-[min(100vw,28rem)] text-slate-300",
-    render: (row) => (
-      <span className="line-clamp-2" title={row.headline}>
-        {shortText(row.headline, 120)}
-      </span>
-    ),
-  },
   {
     key: "evidence",
     label: "Signals",

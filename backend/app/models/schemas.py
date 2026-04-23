@@ -166,8 +166,10 @@ class TrendCard(BaseModel):
     entity_type: str
     virality_score: float
     confidence_tier: str
+    trend_statement: str | None = None
     headline: str
     why_viral: str
+    viral_reasons: list[str] = Field(default_factory=list)
     evidence: TrendEvidence
     signal_chips: list[str]
     trend_stage: str
@@ -177,6 +179,22 @@ class TrendCard(BaseModel):
     lifecycle_stage: str | None = None
     self_confidence: str | None = None
     challenge_notes: list[str] = Field(default_factory=list)
+
+
+class LlmUsageSummary(BaseModel):
+    llm_call_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    total_latency_ms: float = 0.0
+    avg_latency_ms: float | None = None
+    estimated_cost_usd: float | None = None
+    models: list[str] = Field(default_factory=list)
+
+
+class LlmOpsSummary(BaseModel):
+    overall: LlmUsageSummary = Field(default_factory=LlmUsageSummary)
+    by_node: dict[str, LlmUsageSummary] = Field(default_factory=dict)
 
 
 class TrendReport(BaseModel):
@@ -190,6 +208,7 @@ class TrendReport(BaseModel):
     regional_divergences: list[dict[str, Any]] = Field(default_factory=list)
     execution_trace: list[str] = Field(default_factory=list)
     guardrail_flags: list[str] = Field(default_factory=list)
+    llm_ops: LlmOpsSummary = Field(default_factory=LlmOpsSummary)
 
 
 class ToolInvocationMessage(BaseModel):

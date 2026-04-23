@@ -10,6 +10,9 @@ type Props = {
 export function TrendCard({ trend }: Props) {
   const [expanded, setExpanded] = useState(false);
   const viralityScore = Math.max(0, Math.min(100, Math.round(trend.virality_score * 100)));
+  const primaryTrendText = trend.trend_statement?.trim() || trend.headline;
+  const viralReasons =
+    trend.viral_reasons?.map((reason) => reason.trim()).filter((reason) => reason.length > 0) ?? [];
 
   return (
     <Card className="space-y-3 rounded-2xl bg-slate-950/45">
@@ -21,9 +24,11 @@ export function TrendCard({ trend }: Props) {
             <Badge tone="neutral">{trend.entity_type}</Badge>
             <Badge tone="accent">{trend.trend_stage}</Badge>
           </div>
-          <div className="space-y-0.5">
-            <h3 className="text-lg font-semibold text-slate-50">{trend.term}</h3>
-            <p className="text-xs leading-relaxed text-slate-400">{trend.headline}</p>
+          <div className="space-y-1">
+            <h3 className="text-lg font-semibold leading-snug text-slate-50">{primaryTrendText}</h3>
+            <p className="text-xs leading-relaxed text-slate-400">
+              Signal term: <span className="font-medium text-slate-300">{trend.term}</span>
+            </p>
           </div>
         </div>
 
@@ -65,6 +70,17 @@ export function TrendCard({ trend }: Props) {
 
       {expanded ? (
         <div className="space-y-3 border-t border-white/10 pt-4">
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-slate-200">Why this is viral</div>
+            <ul className="space-y-2 text-sm leading-6 text-slate-300">
+              {(viralReasons.length > 0 ? viralReasons : [trend.why_viral]).map((reason, index) => (
+                <li key={`${reason}-${index}`} className="rounded-2xl border border-white/8 bg-white/3 px-4 py-3">
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+
           <div className="text-sm font-medium text-slate-200">Evidence summary</div>
           <ul className="space-y-2 text-sm leading-6 text-slate-300">
             {Object.entries(trend.evidence)

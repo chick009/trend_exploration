@@ -81,11 +81,28 @@ export type TrendCard = {
   trend_statement?: string;
   headline: string;
   why_viral: string;
+  viral_reasons?: string[];
   evidence: TrendEvidence;
   signal_chips: string[];
   trend_stage: string;
   watch_flag: boolean;
   positivity_score?: number;
+};
+
+export type LlmUsageSummary = {
+  llm_call_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  total_latency_ms: number;
+  avg_latency_ms?: number | null;
+  estimated_cost_usd?: number | null;
+  models: string[];
+};
+
+export type LlmOpsSummary = {
+  overall: LlmUsageSummary;
+  by_node: Record<string, LlmUsageSummary>;
 };
 
 export type TrendReport = {
@@ -99,6 +116,7 @@ export type TrendReport = {
   regional_divergences: Array<Record<string, unknown>>;
   execution_trace: string[];
   guardrail_flags: string[];
+  llm_ops?: LlmOpsSummary;
 };
 
 export type ToolInvocationKind = "sql" | "llm" | "memory";

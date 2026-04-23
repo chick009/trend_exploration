@@ -143,6 +143,45 @@ export function LangGraphAgentTab({ workbench }: Props) {
                     <span>{report.recency_days} days</span>
                   </div>
 
+                  {report.llm_ops ? (
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">LLM calls</div>
+                        <div className="mt-2 text-sm text-slate-100">{report.llm_ops.overall.llm_call_count}</div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Prompt tokens</div>
+                        <div className="mt-2 text-sm text-slate-100">
+                          {report.llm_ops.overall.prompt_tokens.toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Completion tokens</div>
+                        <div className="mt-2 text-sm text-slate-100">
+                          {report.llm_ops.overall.completion_tokens.toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Total latency</div>
+                        <div className="mt-2 text-sm text-slate-100">
+                          {Math.round(report.llm_ops.overall.total_latency_ms).toLocaleString()} ms
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/35 p-3">
+                        <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Estimated cost</div>
+                        <div className="mt-2 text-sm text-slate-100">
+                          {report.llm_ops.overall.estimated_cost_usd != null
+                            ? `$${report.llm_ops.overall.estimated_cost_usd.toFixed(4)}`
+                            : "n/a"}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {report.llm_ops?.overall.models?.length ? (
+                    <div className="text-xs text-slate-500">Models: {report.llm_ops.overall.models.join(", ")}</div>
+                  ) : null}
+
                   <div className="grid gap-4">
                     {report.trends.map((trend) => (
                       <TrendCard key={`${trend.term}-${trend.rank}-agent`} trend={trend} />

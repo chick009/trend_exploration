@@ -84,6 +84,33 @@ def _score_candidate(
     }
 
 
+def _normalize_reason_sentence(text: str) -> str:
+    normalized = " ".join(str(text).split()).strip()
+    if not normalized:
+        return ""
+    if normalized[-1] not in ".!?":
+        normalized += "."
+    return normalized
+
+
+def _resolve_viral_reasons(candidate: dict[str, Any], verdict: dict[str, Any]) -> list[str]:
+    normalized: list[str] = []
+    for reason in verdict.get("viral_reasons", []):
+        cleaned = _normalize_reason_sentence(reason)
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
+        if len(normalized) >= 3:
+            break
+    if normalized:
+        return normalized
+
+    fallback_reason = candidate.get("viral_reasoning") or candidate.get("data_pattern")
+    cleaned_fallback = _normalize_reason_sentence(fallback_reason or "")
+    if cleaned_fallback:
+        return [cleaned_fallback]
+    return ["The tracked evidence is aligning strongly enough to suggest this is more than isolated noise."]
+
+
 def _invoke_verdicts(candidates: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], graph_llm.LlmTrace | None]:
     if not candidates:
         return {}, None
@@ -99,6 +126,9 @@ def _invoke_verdicts(candidates: list[dict[str, Any]]) -> tuple[dict[str, dict[s
             "reasoning_blocks": candidate.get("reasoning_blocks", []),
             "social_post_count": candidate.get("social_post_count", 0),
             "avg_engagement": candidate.get("avg_engagement", 0.0),
+            "avg_signal_strength": candidate.get("avg_signal_strength", 0.0),
+            "avg_novelty": candidate.get("avg_novelty", 0.0),
+            "avg_consumer_intent": candidate.get("avg_consumer_intent", 0.0),
             "search_wow_delta": candidate.get("search_wow_delta", 0.0),
             "sales_velocity": candidate.get("sales_velocity", 0.0),
             "restock_count": candidate.get("restock_count", 0),
@@ -123,6 +153,11 @@ For every candidate, weigh these challenges:
 Return ONE verdict per `canonical_term`:
 - `status`: "confirmed" | "watch" | "noise". Be strict: mark "noise" when the signal is thin, duplicative, or purely hype.
 - `trend_statement`: optional. Provide ONLY if you can sharpen the abstraction. Keep it ONE sentence, general (behavior, routine, aesthetic, benefit). NEVER a product or single brand. Omit/null if the existing statement is already correct.
+- `viral_reasons`: 1-3 concise reasons for "why this is viral".
+  - Each reason must be exactly one sentence.
+  - Each reason must be grounded in the evidence figures or source alignment in the candidate payload.
+  - Use concrete evidence such as search delta, post-signal strength, sales velocity, restocks, or cross-market spread.
+  - Do not just restate the canonical term or trend label.
 - `challenge_notes`: 1-3 short, concrete critiques that reference specific weaknesses in the evidence.
 - `hype_only`: true if the signal is purely social without commerce or search backing.
 - `seasonal_risk`: true if this is plausibly a recurring seasonal pattern.
@@ -220,7 +255,7 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
         )
         virality_score = score_payload["virality_score"]
         confidence_tier = assign_confidence(_signal_count(candidate), virality_score)
-        previous = prior_snapshot.get(f"{state['market']}:{candidate['canonical_term']}")
+        previous = prior_snapshot.get(f"{candidate['market']}:{candidate['canonical_term']}")
         lifecycle_stage = determine_lifecycle_stage(
             virality_score,
             previous_score=previous.get("virality_score") if previous else None,
@@ -254,6 +289,15 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
                 status="error",
                 input_summary=f"candidates={len(synthesized)}",
                 error=str(exc),
+                metadata={
+                    "schema": "SynthesizerVerdictBatch",
+                    "model": (trace or {}).get("model"),
+                    "duration_ms": (trace or {}).get("duration_ms"),
+                    "prompt_tokens": (trace or {}).get("prompt_tokens"),
+                    "completion_tokens": (trace or {}).get("completion_tokens"),
+                    "total_tokens": (trace or {}).get("total_tokens"),
+                    "estimated_cost_usd": (trace or {}).get("estimated_cost_usd"),
+                },
                 system_prompt=(trace or {}).get("system_prompt"),
                 user_prompt=(trace or {}).get("user_prompt"),
                 response_text=(trace or {}).get("response_text"),
@@ -281,6 +325,10 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
                 "schema": "SynthesizerVerdictBatch",
                 "model": trace["model"] if trace else None,
                 "duration_ms": trace["duration_ms"] if trace else None,
+                "prompt_tokens": trace.get("prompt_tokens") if trace else None,
+                "completion_tokens": trace.get("completion_tokens") if trace else None,
+                "total_tokens": trace.get("total_tokens") if trace else None,
+                "estimated_cost_usd": trace.get("estimated_cost_usd") if trace else None,
             },
             system_prompt=trace["system_prompt"] if trace else None,
             user_prompt=trace["user_prompt"] if trace else None,
@@ -308,6 +356,7 @@ def run_evidence_synthesizer(state: TrendDiscoveryState) -> TrendDiscoveryState:
         sharpened_statement = (verdict.get("trend_statement") or "").strip()
         if sharpened_statement:
             candidate["trend_statement"] = sharpened_statement
+        candidate["viral_reasons"] = _resolve_viral_reasons(candidate, verdict)
         candidate["challenge_notes"] = verdict.get("challenge_notes", [])
         candidate["hype_only"] = verdict.get("hype_only", False)
         candidate["seasonal_risk"] = verdict.get("seasonal_risk", False)

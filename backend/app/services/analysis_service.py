@@ -67,6 +67,85 @@ def _gate_route_from_state(state_update: dict[str, Any]) -> str:
     return "formatter"
 
 
+def _group_llm_node_name(node: str) -> str:
+    return node.split(":", 1)[0]
+
+
+def _safe_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _safe_float(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
+def _empty_llm_usage_summary() -> dict[str, Any]:
+    return {
+        "llm_call_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "total_latency_ms": 0.0,
+        "avg_latency_ms": None,
+        "estimated_cost_usd": None,
+        "models": [],
+    }
+
+
+def _finalize_llm_usage_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    call_count = int(summary["llm_call_count"])
+    total_latency = round(float(summary["total_latency_ms"]), 2)
+    estimated_cost = summary["estimated_cost_usd"]
+    return {
+        **summary,
+        "total_latency_ms": total_latency,
+        "avg_latency_ms": round(total_latency / call_count, 2) if call_count else None,
+        "estimated_cost_usd": round(float(estimated_cost), 8) if estimated_cost is not None else None,
+        "models": sorted(set(summary["models"])),
+    }
+
+
+def _aggregate_llm_ops(tool_invocations: list[dict[str, Any]] | list[ToolInvocation] | None) -> dict[str, Any]:
+    overall = _empty_llm_usage_summary()
+    by_node: dict[str, dict[str, Any]] = {}
+
+    for invocation in tool_invocations or []:
+        entry = invocation.model_dump() if isinstance(invocation, ToolInvocation) else invocation
+        if not isinstance(entry, dict) or entry.get("tool_kind") != "llm":
+            continue
+        metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+        grouped_node = _group_llm_node_name(str(entry.get("node") or "unknown"))
+        node_summary = by_node.setdefault(grouped_node, _empty_llm_usage_summary())
+
+        for summary in (overall, node_summary):
+            summary["llm_call_count"] += 1
+            summary["prompt_tokens"] += _safe_int(metadata.get("prompt_tokens"))
+            summary["completion_tokens"] += _safe_int(metadata.get("completion_tokens"))
+            summary["total_tokens"] += _safe_int(metadata.get("total_tokens"))
+            summary["total_latency_ms"] += _safe_float(entry.get("duration_ms") or metadata.get("duration_ms"))
+
+            model_name = metadata.get("model")
+            if isinstance(model_name, str) and model_name.strip():
+                summary["models"].append(model_name.strip())
+
+            estimated_cost = metadata.get("estimated_cost_usd")
+            if isinstance(estimated_cost, (int, float)):
+                summary["estimated_cost_usd"] = _safe_float(summary.get("estimated_cost_usd")) + float(estimated_cost)
+
+    return {
+        "overall": _finalize_llm_usage_summary(overall),
+        "by_node": {node: _finalize_llm_usage_summary(summary) for node, summary in sorted(by_node.items())},
+    }
+
+
 def _build_node_outputs(
     current: dict[str, Any],
     *,
@@ -99,6 +178,7 @@ def _build_node_outputs(
         }
     if sql_results is not None and query_plan is not None:
         sql_summary = _sql_results_summary(sql_results)
+        prior_snapshot = base_state.get("prior_snapshot") or {}
         node_outputs["backend_preload"] = {
             "received_state": {
                 "query_intent": intent_update.get("query_intent") if intent_update is not None else base_state.get("query_intent"),
@@ -107,33 +187,20 @@ def _build_node_outputs(
             "emitted_state": {
                 "query_plan": list(query_plan),
                 "source_batch_ids": list(source_batch_ids or []),
+                "prior_snapshot_count": len(prior_snapshot),
+                "prior_snapshot": _sample_prior_snapshot(prior_snapshot),
                 **sql_summary,
             },
             "raw_output": {
                 "query_plan": list(query_plan),
                 "source_batch_ids": list(source_batch_ids or []),
+                "prior_snapshot_count": len(prior_snapshot),
+                "prior_snapshot": _sample_prior_snapshot(prior_snapshot),
                 **sql_summary,
             },
         }
     if state_update is None:
         return node_outputs
-
-    prior_snapshot = state_update.get("prior_snapshot")
-    if prior_snapshot is not None:
-        node_outputs["memory_read"] = {
-            "received_state": {
-                "market": state_update.get("market"),
-                "category": state_update.get("category"),
-            },
-            "emitted_state": {
-                "prior_snapshot_count": len(prior_snapshot),
-                "prior_snapshot": _sample_prior_snapshot(prior_snapshot),
-            },
-            "raw_output": {
-                "prior_snapshot_count": len(prior_snapshot),
-                "prior_snapshot": _sample_prior_snapshot(prior_snapshot),
-            },
-        }
 
     if state_update.get("trend_candidates") is not None:
         trend_candidates = list(state_update.get("trend_candidates") or [])
@@ -141,7 +208,9 @@ def _build_node_outputs(
             "received_state": {
                 "query_intent": state_update.get("query_intent"),
                 "source_batch_ids": list(state_update.get("source_batch_ids") or []),
-                "sql_results_summary": _sql_results_summary(state_update.get("sql_results") or {"social": [], "search": [], "sales": []}),
+                "sql_results_summary": _sql_results_summary(
+                    state_update.get("sql_results") or {"social": [], "search": [], "sales": [], "memory": []}
+                ),
             },
             "emitted_state": {
                 "candidate_count": len(trend_candidates),
@@ -268,7 +337,10 @@ def build_run_status_response(row: dict[str, Any]) -> RunStatusResponse:
         execution_trace=json_loads(row.get("execution_trace"), []),
         tool_invocations=tool_invocations,
         node_outputs=node_outputs,
-        stats={"source_batch_ids": json_loads(row.get("source_batch_ids"), [])},
+        stats={
+            "source_batch_ids": json_loads(row.get("source_batch_ids"), []),
+            "llm_ops": _aggregate_llm_ops(normalized_tool_invocations),
+        },
         guardrail_flags=(report.guardrail_flags if report else []),
         report=report,
     )
@@ -351,17 +423,19 @@ class AnalysisService:
             )
             yield "run.updated", self.get_run_status(run_id)
 
-            sql_results, source_batch_ids, query_plan, sql_tool_invocations = load_sql_results(query_intent)
+            sql_results, prior_snapshot, source_batch_ids, query_plan, sql_tool_invocations = load_sql_results(query_intent)
             tool_invocations.extend(sql_tool_invocations)
             backend_line = (
                 "[BackendData] "
                 f"plan={list(query_plan)} social={len(sql_results['social'])} "
-                f"search={len(sql_results['search'])} sales={len(sql_results['sales'])}"
+                f"search={len(sql_results['search'])} sales={len(sql_results['sales'])} "
+                f"memory={len(sql_results['memory'])}"
             )
             initial_state = {
                 **initial_state,
                 **intent_update,
                 "sql_results": sql_results,
+                "prior_snapshot": prior_snapshot,
                 "source_batch_ids": source_batch_ids,
                 "execution_log": [*intent_log, backend_line],
                 "tool_invocations": list(tool_invocations),
@@ -461,6 +535,7 @@ class AnalysisService:
                 **report,
                 "execution_trace": list(final_state.get("execution_log") or report.get("execution_trace") or []),
                 "guardrail_flags": list(final_state.get("guardrail_flags") or report.get("guardrail_flags") or []),
+                "llm_ops": _aggregate_llm_ops(tool_invocations),
             }
             update_analysis_run(
                 run_id,

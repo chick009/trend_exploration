@@ -446,12 +446,17 @@ def get_latest_trend_report(market: str, category: str) -> dict[str, Any] | None
     return json_loads(row["report_json"], None) if row and row["report_json"] else None
 
 
-def get_prior_trend_snapshot(market: str, category: str, lookback_days: int = 30) -> dict[str, dict[str, Any]]:
+def get_prior_trend_snapshots(markets: list[str], category: str, lookback_days: int = 30) -> dict[str, dict[str, Any]]:
+    if not markets:
+        return {}
+
     category_filter = "" if category == "all" else "AND COALESCE(hb_category, 'all') = ?"
-    params: list[Any] = [market]
+    market_placeholders = ", ".join("?" for _ in markets)
+    params: list[Any] = [*markets]
     if category != "all":
         params.append(category)
     params.append(f"-{lookback_days} days")
+
     with connection_scope() as connection:
         rows = connection.execute(
             f"""
@@ -474,10 +479,10 @@ def get_prior_trend_snapshot(market: str, category: str, lookback_days: int = 30
                    llm_rationale,
                    status
             FROM trend_exploration
-            WHERE market = ?
+            WHERE market IN ({market_placeholders})
               {category_filter}
               AND datetime(analysis_date) >= datetime('now', ?)
-            ORDER BY datetime(analysis_date) DESC
+            ORDER BY market ASC, canonical_term ASC, datetime(analysis_date) DESC
             """,
             tuple(params),
         ).fetchall()
@@ -492,6 +497,10 @@ def get_prior_trend_snapshot(market: str, category: str, lookback_days: int = 30
         payload["candidate_json"] = json_loads(payload["candidate_json"], {})
         snapshot[key] = payload
     return snapshot
+
+
+def get_prior_trend_snapshot(market: str, category: str, lookback_days: int = 30) -> dict[str, dict[str, Any]]:
+    return get_prior_trend_snapshots([market], category, lookback_days)
 
 
 def get_latest_source_health() -> list[dict[str, Any]]:
@@ -823,35 +832,60 @@ def upsert_search_trend(record: dict[str, Any]) -> None:
         )
 
 
-def get_social_trend_rows(region: str, category: str, recency_days: int) -> list[dict[str, Any]]:
-    category_filter = "" if category == "all" else "AND COALESCE(llm_category, 'all') = ?"
+def get_post_trend_signal_rows(region: str, category: str, recency_days: int) -> list[dict[str, Any]]:
     params: list[Any] = [region, f"-{recency_days} days"]
+    category_filter = ""
     if category != "all":
-        params.append(category)
+        categories = ["supplement", "supplements"] if category == "supplements" else [category]
+        placeholders = ", ".join("?" for _ in categories)
+        category_filter = f"AND category IN ({placeholders})"
+        params.extend(categories)
     query = f"""
         SELECT
-            COALESCE(llm_entities, entity_mentions, '[]') AS entity_list,
-            AVG(engagement_score) AS avg_engagement,
-            AVG(positivity_score) AS avg_positivity_score,
+            search_keyword AS keyword,
+            MIN(category) AS signal_category,
+            AVG(trend_strength) AS avg_signal_strength,
+            AVG(novelty) AS avg_novelty,
+            AVG(consumer_intent) AS avg_consumer_intent,
             COUNT(*) AS post_count,
-            SUM(liked_count) AS total_likes,
-            SUM(comment_count) AS total_comments
-        FROM social_posts
+            source_batch_id
+        FROM post_trend_signals
         WHERE region = ?
-          AND date(post_date) >= date('now', ?)
+          AND datetime(processed_at) >= datetime('now', ?)
           {category_filter}
-          AND relevance_score >= 0.4
-        GROUP BY entity_list
+          AND search_keyword IS NOT NULL
+          AND TRIM(search_keyword) != ''
+        GROUP BY search_keyword, source_batch_id
+        ORDER BY avg_signal_strength DESC
     """
     with connection_scope() as connection:
         return safe_sql_execute(connection, query, tuple(params))
 
 
+def _search_category_filter(category: str) -> tuple[str, list[Any]]:
+    if category == "all":
+        return "", []
+
+    normalized_expr = (
+        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(llm_category, ''), ';', ','), '/', ','), '|', ','), ' ', ''))"
+    )
+    accepted_categories = ["supplements", "supplement"] if category == "supplements" else [category]
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    for accepted in accepted_categories:
+        clauses.append(
+            f"({normalized_expr} = ? OR INSTR(',' || {normalized_expr} || ',', ',' || ? || ',') > 0)"
+        )
+        params.extend([accepted, accepted])
+
+    return "AND (" + " OR ".join(clauses) + ")", params
+
+
 def get_search_breakout_rows(region: str, category: str, recency_days: int) -> list[dict[str, Any]]:
-    category_filter = "" if category == "all" else "AND COALESCE(llm_category, 'all') = ?"
+    category_filter, category_params = _search_category_filter(category)
     params: list[Any] = [region, f"-{recency_days} days"]
-    if category != "all":
-        params.append(category)
+    params.extend(category_params)
     query = f"""
         SELECT
             keyword,
@@ -950,7 +984,7 @@ def get_latest_source_batch_ids() -> list[str]:
             """
             SELECT DISTINCT source_batch_id
             FROM (
-                SELECT source_batch_id, processed_at AS completed_at FROM social_posts WHERE source_batch_id IS NOT NULL
+                SELECT source_batch_id, processed_at AS completed_at FROM post_trend_signals WHERE source_batch_id IS NOT NULL
                 UNION ALL
                 SELECT source_batch_id, processed_at AS completed_at FROM search_trends WHERE source_batch_id IS NOT NULL
                 UNION ALL

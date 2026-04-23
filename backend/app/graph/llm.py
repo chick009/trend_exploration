@@ -19,6 +19,10 @@ class LlmTrace(TypedDict):
     response_text: str | None
     model: str
     duration_ms: float | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    estimated_cost_usd: float | None
 
 
 class JsonResponseError(ValueError):
@@ -89,6 +93,70 @@ def _resolved_model_name(model: str | None) -> str:
     return model or settings.openrouter_model
 
 
+def _extract_usage_int(usage_sources: list[dict[str, Any]], *keys: str) -> int | None:
+    for source in usage_sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return int(value)
+    return None
+
+
+def _extract_usage_float(metadata_sources: list[dict[str, Any]], *keys: str) -> float | None:
+    for source in metadata_sources:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return round(float(value), 8)
+    return None
+
+
+def _extract_response_observability(response: Any, *, fallback_model: str) -> dict[str, Any]:
+    response_metadata = getattr(response, "response_metadata", None)
+    response_metadata = response_metadata if isinstance(response_metadata, dict) else {}
+    usage_metadata = getattr(response, "usage_metadata", None)
+    usage_sources: list[dict[str, Any]] = []
+    metadata_sources: list[dict[str, Any]] = [response_metadata]
+    if isinstance(usage_metadata, dict):
+        usage_sources.append(usage_metadata)
+        metadata_sources.append(usage_metadata)
+    for key in ("token_usage", "usage", "usage_metadata"):
+        candidate = response_metadata.get(key)
+        if isinstance(candidate, dict):
+            usage_sources.append(candidate)
+            metadata_sources.append(candidate)
+
+    prompt_tokens = _extract_usage_int(usage_sources, "input_tokens", "prompt_tokens")
+    completion_tokens = _extract_usage_int(usage_sources, "output_tokens", "completion_tokens")
+    total_tokens = _extract_usage_int(usage_sources, "total_tokens")
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    model_name = str(
+        response_metadata.get("model_name")
+        or response_metadata.get("model")
+        or fallback_model
+    )
+    estimated_cost_usd = _extract_usage_float(
+        metadata_sources,
+        "cost",
+        "total_cost",
+        "estimated_cost",
+        "estimated_cost_usd",
+    )
+    return {
+        "model": model_name,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+    }
+
+
 def _invoke_json_response_internal(
     schema: type[SchemaT],
     *,
@@ -104,6 +172,10 @@ def _invoke_json_response_internal(
         "response_text": None,
         "model": resolved_model,
         "duration_ms": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
+        "total_tokens": None,
+        "estimated_cost_usd": None,
     }
     started_at = perf_counter()
     try:
@@ -125,6 +197,7 @@ def _invoke_json_response_internal(
         raise JsonResponseError(f"Model invocation failed for {schema.__name__}: {exc!s}", trace=trace) from exc
 
     trace["duration_ms"] = round((perf_counter() - started_at) * 1000, 2)
+    trace.update(_extract_response_observability(response, fallback_model=resolved_model))
     content = getattr(response, "content", response)
     if isinstance(content, dict):
         trace["response_text"] = json.dumps(content, default=str)

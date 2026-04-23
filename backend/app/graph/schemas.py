@@ -58,6 +58,13 @@ class SynthesizerVerdict(BaseModel):
             "routine, aesthetic, or benefit shift); never a product or single brand."
         ),
     )
+    viral_reasons: list[str] = Field(
+        default_factory=list,
+        description=(
+            "1-3 concise one-sentence reasons explaining why the trend looks viral, each grounded "
+            "in the provided evidence figures or source alignment."
+        ),
+    )
     challenge_notes: list[str] = Field(default_factory=list)
     hype_only: bool = False
     seasonal_risk: bool = False
